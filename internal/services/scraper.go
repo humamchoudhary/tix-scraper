@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -140,6 +141,8 @@ func processCaptcha(ctx context.Context) (string, error) {
 	t_client := gosseract.NewClient()
 	defer t_client.Close()
 	t_client.SetLanguage("eng")
+
+	t_client.SetWhitelist("abcdefghijklmnopqrstuvwxyz")
 	t_client.SetPageSegMode(gosseract.PSM_AUTO)
 	t_client.SetImage(enhancedPath)
 
@@ -210,8 +213,30 @@ func bypassCaptcha(ctx context.Context) (string, error) {
 }
 
 // reserveSeat attempts to reserve the seat with the given captcha
+
+// Helper function to save a screenshot
+func saveScreenshot(ctx context.Context, step string) {
+	var buf []byte
+	if err := chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90)); err != nil {
+		log.Println("Failed to take screenshot:", err)
+		return
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	outDir := filepath.Join(homeDir, "Downloads", "chromedp_debug")
+	os.MkdirAll(outDir, os.ModePerm)
+
+	filename := filepath.Join(outDir, fmt.Sprintf("%s-%d.png", step, time.Now().UnixNano()))
+	if err := ioutil.WriteFile(filename, buf, 0644); err != nil {
+		log.Println("Failed to save screenshot:", err)
+		return
+	}
+	fmt.Println("Screenshot saved:", filename)
+}
+
 func reserveSeat(ctx context.Context, captchaText, perOrderTicket, sessionID, seatVal, eventID, ticketID string) (bool, error) {
-	// Check for cancellation before starting
+	fmt.Println("Starting reservation")
+	time.Sleep(5 * time.Second)
 	select {
 	case <-ctx.Done():
 		log.Println("Reservation cancelled by user")
@@ -219,12 +244,14 @@ func reserveSeat(ctx context.Context, captchaText, perOrderTicket, sessionID, se
 	default:
 	}
 
+	log.Println("Step 0: Before starting reservation")
+	saveScreenshot(ctx, "before_start")
+
 	log.Println("Step 3: Submitting Reservation...")
 
 	var currentURL string
 	var alertText string
 
-	// Setup alert listener
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		switch e := ev.(type) {
 		case *page.EventJavascriptDialogOpening:
@@ -237,63 +264,51 @@ func reserveSeat(ctx context.Context, captchaText, perOrderTicket, sessionID, se
 		}
 	})
 
-	// Get current URL
+	// Capture screenshot before getting URL
+	saveScreenshot(ctx, "before_get_url")
 	err := chromedp.Run(ctx, chromedp.Location(&currentURL))
+	fmt.Printf("cur: %s\n", currentURL)
 	if err != nil {
 		return false, fmt.Errorf("error getting current URL: %w", err)
 	}
-
-	// Check for cancellation before setting ticket quantity
-	select {
-	case <-ctx.Done():
-		log.Println("Reservation cancelled by user")
-		return false, fmt.Errorf("reservation cancelled")
-	default:
-	}
+	saveScreenshot(ctx, "after_get_url")
 
 	// Set ticket quantity
+	saveScreenshot(ctx, "before_set_ticket")
 	log.Println("Setting ticket quantity...")
 	err = chromedp.Run(ctx,
 		chromedp.WaitVisible("#ticketPriceList", chromedp.ByQueryAll),
 		chromedp.SetValue("#ticketPriceList select", perOrderTicket, chromedp.ByQuery),
 	)
+	saveScreenshot(ctx, "after_set_ticket")
 	if err != nil {
 		return false, fmt.Errorf("error setting ticket quantity: %w", err)
 	}
 
-	// Check for cancellation before filling captcha
-	select {
-	case <-ctx.Done():
-		log.Println("Reservation cancelled by user")
-		return false, fmt.Errorf("reservation cancelled")
-	default:
-	}
-
 	// Fill captcha and submit
+	saveScreenshot(ctx, "before_captcha_submit")
 	log.Println("Filling captcha and submitting...")
 	err = chromedp.Run(ctx,
+		chromedp.Sleep(2*time.Second),
 		chromedp.WaitVisible("#TicketForm_verifyCode", chromedp.ByQuery),
 		chromedp.SetValue("#TicketForm_verifyCode", captchaText, chromedp.ByQuery),
-		chromedp.Click("#TicketForm_agree", chromedp.ByQuery),
+		chromedp.Click("#TicketForm_agree", chromedp.ByQueryAll),
 		chromedp.Sleep(2*time.Second),
+		chromedp.ScrollIntoView(`//button[text()='Submit']`, chromedp.BySearch),
 		chromedp.Click(`//button[text()='Submit']`, chromedp.BySearch),
-		chromedp.Sleep(2*time.Second),
+		chromedp.Click(`//button[text()='Submit']`, chromedp.BySearch),
+		chromedp.Sleep(4*time.Second),
 	)
+	saveScreenshot(ctx, "after_captcha_submit")
 	if err != nil {
 		return false, fmt.Errorf("error submitting form: %w", err)
 	}
 
-	// Check for cancellation before verifying result
-	select {
-	case <-ctx.Done():
-		log.Println("Reservation cancelled by user")
-		return false, fmt.Errorf("reservation cancelled")
-	default:
-	}
-
-	// Check if URL changed (success)
+	saveScreenshot(ctx, "before_verify_result")
 	var newURL string
 	err = chromedp.Run(ctx, chromedp.Location(&newURL))
+	fmt.Printf("new: %s\n", newURL)
+	saveScreenshot(ctx, "after_verify_result")
 	if err != nil {
 		return false, fmt.Errorf("error getting new URL: %w", err)
 	}
@@ -303,7 +318,6 @@ func reserveSeat(ctx context.Context, captchaText, perOrderTicket, sessionID, se
 		return true, nil
 	}
 
-	// Check if alert was triggered (failure)
 	if alertText != "" {
 		log.Println("Website alert detected:", alertText)
 		return false, fmt.Errorf("reservation failed: %s", alertText)
@@ -520,6 +534,8 @@ func Scraper(ctx context.Context, base_url string, event_id string, ticket_id st
 	}
 
 	err = chromedp.Run(timeoutCtx,
+		chromedp.WaitVisible("//button[text()='Accept All']", chromedp.BySearch),
+		chromedp.Click("//button[text()='Accept All']", chromedp.BySearch),
 		chromedp.WaitVisible("#selectseat", chromedp.ByQuery),
 		chromedp.WaitVisible(".area-list", chromedp.ByQueryAll),
 		chromedp.Sleep(2*time.Second),
@@ -848,7 +864,7 @@ func checkoutAndExtractInfo(ctx context.Context) (*Booking, error) {
 	}
 
 	// Click reSelect button
-	log.Println("Clicking reSelect button...")
+	log.Println("Checkingout...")
 	err = chromedp.Run(ctx,
 		chromedp.WaitVisible("#reSelect", chromedp.ByID),
 		chromedp.Click("#reSelect", chromedp.ByID),
@@ -859,7 +875,7 @@ func checkoutAndExtractInfo(ctx context.Context) (*Booking, error) {
 		return nil, fmt.Errorf("error clicking reSelect: %w", err)
 	}
 
-	log.Println("Successfully clicked reSelect button")
+	log.Println("Successfully checked out")
 	return booking, nil
 }
 
