@@ -14,6 +14,25 @@
     "ticket_info": "單程票(A09竹北市上車) / 600",
     "ticket_qty": "1 ticket(s)",
     "service_fee": "0",
-    "total": "600"
+    "total": "600",
+    "username": ""
+  },
+  {
+    "session_id": "sdqd2k1v5919suk26eu5vo4ndu",
+    "seat": "A09 新竹縣 往 高雄市",
+    "event_id": "25_twicebus",
+    "ticket_id": "20210",
+    "num_of_tickets": "1",
+    "order_number": "2576f18",
+    "event_name": "【歌迷返鄉專車】x TWICE＜THIS IS FOR＞WORLD TOUR IN KAOHSIUNG",
+    "event_date": "2025/11/22 (Sat.) --:--",
+    "event_venue": "【返鄉專車】指定搭車點",
+    "section": "A09 新竹縣 往 高雄市",
+    "seat_info": "No.000079",
+    "ticket_info": "單程票(A09竹北市上車) / 600",
+    "ticket_qty": "1 ticket(s)",
+    "service_fee": "0",
+    "total": "600",
+    "username": "[Google] Jin Go Sup"
   }
 ]
