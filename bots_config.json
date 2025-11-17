@@ -1,0 +1,13 @@
+[
+  {
+    "id": "bot_1763326370",
+    "name": "Test Bot",
+    "sid": "sdqd2k1v5919suk26eu5vo4ndu",
+    "event_id": "25_twicebus",
+    "ticket_id": "20210",
+    "filter": "A07",
+    "quantity": "1",
+    "max_tickets": "4",
+    "loop": true
+  }
+]
