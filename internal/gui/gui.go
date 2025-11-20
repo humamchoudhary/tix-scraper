@@ -47,6 +47,7 @@ var (
 type BotConfig struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	User       User   `json:"user"`
 	SID        string `json:"sid"`
 	EventID    string `json:"event_id"`
 	TicketID   string `json:"ticket_id"`
@@ -76,18 +77,27 @@ type Booking struct {
 	UserName     string `json:"username"`
 }
 
+type User struct {
+	SID      string `json:"sid"`
+	Username string `json:"username"`
+}
+
 type GUI struct {
-	th             *material.Theme
-	w              *app.Window
-	bots           []*Bot
-	selectedBot    int
-	addBotBtn      widget.Clickable
-	logView        *LogView
-	bookingsView   *BookingsView
-	showBookings   bool
-	bookingsTabBtn widget.Clickable
-	botsTabBtn     widget.Clickable
-	mu             sync.Mutex
+	th                   *material.Theme
+	w                    *app.Window
+	bots                 []*Bot
+	selectedBot          int
+	addBotBtn            widget.Clickable
+	logView              *LogView
+	bookingsView         *BookingsView
+	usersView            *UsersView
+	showBookings         bool
+	showUsers            bool
+	bookingsTabBtn       widget.Clickable
+	botsTabBtn           widget.Clickable
+	usersTabBtn          widget.Clickable
+	mu                   sync.Mutex
+	OcrSpaceAPIKeyEditor widget.Editor
 }
 
 type Bot struct {
@@ -97,7 +107,7 @@ type Bot struct {
 
 	// Editors
 	nameEditor       widget.Editor
-	sidEditor        widget.Editor
+	userDropdown     Dropdown
 	eventIDEditor    widget.Editor
 	ticketIDEditor   widget.Editor
 	filterEditor     widget.Editor
@@ -120,6 +130,86 @@ type BookingsView struct {
 	mu            sync.Mutex
 }
 
+type UsersView struct {
+	gui           *GUI
+	list          widget.List
+	users         []User
+	deleteButtons []widget.Clickable
+	deleteAllBtn  widget.Clickable
+	refreshBtn    widget.Clickable
+	mu            sync.Mutex
+	sidEditor     widget.Editor
+	validateBtn   widget.Clickable
+	validating    bool
+}
+
+type Dropdown struct {
+	Options    []string
+	selected   int
+	clickable  widget.Clickable
+	list       widget.List
+	isOpen     bool
+	clickables []widget.Clickable
+}
+
+func (d *Dropdown) Layout(gtx C, th *material.Theme) D {
+	if d.clickable.Clicked(gtx) {
+		d.isOpen = !d.isOpen
+	}
+
+	if len(d.clickables) != len(d.Options) {
+		d.clickables = make([]widget.Clickable, len(d.Options))
+	}
+
+	for i := range d.Options {
+		if d.clickables[i].Clicked(gtx) {
+			d.selected = i
+			d.isOpen = false
+		}
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx C) D {
+			border := widget.Border{
+				Color:        borderColor,
+				CornerRadius: unit.Dp(8),
+				Width:        unit.Dp(1),
+			}
+			return border.Layout(gtx, func(gtx C) D {
+				return d.clickable.Layout(gtx, func(gtx C) D {
+					return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
+						return material.Body1(th, d.Options[d.selected]).Layout(gtx)
+					})
+				})
+			})
+		}),
+		layout.Rigid(func(gtx C) D {
+			if !d.isOpen {
+				return D{}
+			}
+			// paint a background for the list
+			macro := op.Record(gtx.Ops)
+			dims := layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx C) D {
+				var children []layout.FlexChild
+				for i := range d.Options {
+					index := i
+					children = append(children, layout.Rigid(func(gtx C) D {
+						return material.Button(th, &d.clickables[index], d.Options[index]).Layout(gtx)
+					}))
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+			})
+			call := macro.Stop()
+			// draw the background
+			rect := clip.Rect{Max: dims.Size}
+			paint.FillShape(gtx.Ops, cardBg, rect.Op())
+			// draw the list
+			call.Add(gtx.Ops)
+
+			return dims
+		}),
+	)
+}
 func NewGUI() *GUI {
 	th := material.NewTheme()
 	th.Palette.Bg = bgColor
@@ -130,12 +220,15 @@ func NewGUI() *GUI {
 		selectedBot:  -1,
 		logView:      &LogView{},
 		bookingsView: &BookingsView{},
+		usersView:    &UsersView{},
 		showBookings: false,
 	}
 
 	g.bookingsView.gui = g
+	g.usersView.gui = g
 	g.loadBots()
 	g.bookingsView.loadBookings()
+	g.usersView.loadUsers()
 
 	if len(g.bots) == 0 {
 		g.addBot()
@@ -152,7 +245,6 @@ func (g *GUI) addBot() {
 			Name: fmt.Sprintf("Bot #%d", len(g.bots)+1),
 		},
 		nameEditor:       widget.Editor{SingleLine: true},
-		sidEditor:        widget.Editor{SingleLine: true},
 		eventIDEditor:    widget.Editor{SingleLine: true},
 		ticketIDEditor:   widget.Editor{SingleLine: true},
 		filterEditor:     widget.Editor{SingleLine: true},
@@ -161,7 +253,6 @@ func (g *GUI) addBot() {
 	}
 
 	bot.nameEditor.SetText(bot.config.Name)
-	bot.sidEditor.SetText(bot.config.SID)
 	bot.eventIDEditor.SetText(bot.config.EventID)
 	bot.ticketIDEditor.SetText(bot.config.TicketID)
 	bot.filterEditor.SetText(bot.config.Filter)
@@ -248,11 +339,21 @@ func (g *GUI) layoutSidebar(gtx C) D {
 						}),
 					)
 				}
+				if g.showUsers {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx C) D {
+							label := material.Body1(g.th, fmt.Sprintf("%d Users", len(g.usersView.users)))
+							label.Color = disabledColor
+							label.TextSize = unit.Sp(13)
+							return layout.Inset{Top: unit.Dp(16), Bottom: unit.Dp(8)}.Layout(gtx, label.Layout)
+						}),
+					)
+				}
 				return g.layoutBotList(gtx)
 			}),
 			// Action Button
 			layout.Rigid(func(gtx C) D {
-				if g.showBookings {
+				if g.showBookings || g.showUsers {
 					return D{}
 				}
 
@@ -275,12 +376,21 @@ func (g *GUI) layoutSidebar(gtx C) D {
 func (g *GUI) layoutTabButtons(gtx C) D {
 	if g.botsTabBtn.Clicked(gtx) {
 		g.showBookings = false
+		g.showUsers = false
 		g.w.Invalidate()
 	}
 
 	if g.bookingsTabBtn.Clicked(gtx) {
 		g.showBookings = true
+		g.showUsers = false
 		g.bookingsView.loadBookings()
+		g.w.Invalidate()
+	}
+
+	if g.usersTabBtn.Clicked(gtx) {
+		g.showUsers = true
+		g.showBookings = false
+		g.usersView.loadUsers()
 		g.w.Invalidate()
 	}
 
@@ -299,8 +409,8 @@ func (g *GUI) layoutTabButtons(gtx C) D {
 			// Ensure minimum height
 			gtx.Constraints.Min.Y = minHeight
 
-			gtx.Constraints.Min.X = gtx.Dp(120) // minimum width
-			gtx.Constraints.Max.X = gtx.Dp(120)
+			gtx.Constraints.Min.X = gtx.Dp(80) // minimum width
+			gtx.Constraints.Max.X = gtx.Dp(80)
 			// Draw full background with corner radius
 			rect := image.Rectangle{Max: gtx.Constraints.Max} // public type
 			defer clip.UniformRRect(rect, gtx.Dp(8)).Push(gtx.Ops).Pop()
@@ -316,9 +426,11 @@ func (g *GUI) layoutTabButtons(gtx C) D {
 	}
 
 	return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
-		layout.Flexed(1, func(gtx C) D { return layoutTab(&g.botsTabBtn, "Bots", !g.showBookings) }),
+		layout.Flexed(1, func(gtx C) D { return layoutTab(&g.botsTabBtn, "Bots", !g.showBookings && !g.showUsers) }),
 		layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 		layout.Flexed(1, func(gtx C) D { return layoutTab(&g.bookingsTabBtn, "Bookings", g.showBookings) }),
+		layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+		layout.Flexed(1, func(gtx C) D { return layoutTab(&g.usersTabBtn, "Accounts", g.showUsers) }),
 	)
 }
 
@@ -439,6 +551,9 @@ func (g *GUI) layoutMain(gtx C) D {
 	if g.showBookings {
 		return g.bookingsView.Layout(gtx)
 	}
+	if g.showUsers {
+		return g.usersView.Layout(gtx)
+	}
 
 	if g.selectedBot < 0 || g.selectedBot >= len(g.bots) {
 		return D{}
@@ -521,7 +636,7 @@ func (g *GUI) layoutBotConfig(gtx C, bot *Bot) D {
 						return g.layoutFormRow(gtx, "🤖 Bot Name", &bot.nameEditor)
 					}),
 					layout.Rigid(func(gtx C) D {
-						return g.layoutFormRow(gtx, "🔑 SID Cookie", &bot.sidEditor)
+						return g.layoutUserDropdown(gtx, bot)
 					}),
 					layout.Rigid(func(gtx C) D {
 						return g.layoutFormRow(gtx, "🎟️ Event ID", &bot.eventIDEditor)
@@ -638,6 +753,253 @@ func (bv *BookingsView) saveBookings() {
 	if err := os.WriteFile("bookings.json", data, 0644); err != nil {
 		log.Printf("Error writing bookings: %v", err)
 	}
+}
+
+func (uv *UsersView) loadUsers() {
+	uv.mu.Lock()
+	defer uv.mu.Unlock()
+
+	data, err := os.ReadFile("users.json")
+	if err != nil {
+		uv.users = []User{}
+		return
+	}
+
+	var users []User
+	if err := json.Unmarshal(data, &users); err != nil {
+		uv.users = []User{}
+		return
+	}
+
+	uv.users = users
+	// Reinitialize deleteButtons slice
+	uv.deleteButtons = make([]widget.Clickable, len(users))
+}
+
+func (uv *UsersView) saveUsers() {
+	data, err := json.MarshalIndent(uv.users, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling users: %v", err)
+		return
+	}
+
+	if err := os.WriteFile("users.json", data, 0644); err != nil {
+		log.Printf("Error writing users: %v", err)
+	}
+}
+
+func (uv *UsersView) Layout(gtx C) D {
+	uv.mu.Lock()
+	defer uv.mu.Unlock()
+
+	if uv.refreshBtn.Clicked(gtx) {
+		uv.loadUsers()
+		uv.gui.w.Invalidate()
+	}
+
+	if uv.deleteAllBtn.Clicked(gtx) {
+		uv.users = []User{}
+		uv.saveUsers()
+		uv.gui.w.Invalidate()
+	}
+
+	// Handle individual delete buttons
+	// Make sure deleteButtons is properly sized
+	if len(uv.deleteButtons) != len(uv.users) {
+		uv.deleteButtons = make([]widget.Clickable, len(uv.users))
+	}
+
+	for i := len(uv.deleteButtons) - 1; i >= 0; i-- {
+		if uv.deleteButtons[i].Clicked(gtx) {
+			uv.users = append(uv.users[:i], uv.users[i+1:]...)
+			uv.saveUsers()
+			uv.gui.w.Invalidate()
+			break
+		}
+	}
+
+	if uv.validateBtn.Clicked(gtx) {
+		uv.validating = true
+		go func() {
+			username, err := services.GetUserName(uv.sidEditor.Text())
+			if err != nil {
+				log.Printf("Error validating user: %v", err)
+				uv.gui.w.Invalidate()
+				uv.validating = false
+				return
+			}
+			uv.users = append(uv.users, User{
+				SID:      uv.sidEditor.Text(),
+				Username: username,
+			})
+			uv.saveUsers()
+			uv.sidEditor.SetText("")
+			uv.gui.w.Invalidate()
+			uv.validating = false
+		}()
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		// Header
+		layout.Rigid(func(gtx C) D {
+			return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx C) D {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, func(gtx C) D {
+						label := material.H4(uv.gui.th, fmt.Sprintf("👥 Users (%d)", len(uv.users)))
+						label.Color = accentColor
+						return label.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx C) D {
+						btn := material.Button(uv.gui.th, &uv.refreshBtn, "🔄 Refresh")
+						btn.Background = accentColor
+						btn.Color = bgColor
+						btn.CornerRadius = unit.Dp(8)
+						return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
+					}),
+					layout.Rigid(func(gtx C) D {
+						if len(uv.users) == 0 {
+							return D{}
+						}
+						btn := material.Button(uv.gui.th, &uv.deleteAllBtn, "🗑️ Delete All")
+						btn.Background = dangerColor
+						btn.Color = bgColor
+						btn.CornerRadius = unit.Dp(8)
+						return btn.Layout(gtx)
+					}),
+				)
+			})
+		}),
+		// Add user form
+		layout.Rigid(func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(24), Right: unit.Dp(24), Bottom: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+				return widget.Border{
+					Color:        borderColor,
+					Width:        unit.Dp(1),
+					CornerRadius: unit.Dp(12),
+				}.Layout(gtx, func(gtx C) D {
+					defer clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Max}, gtx.Dp(unit.Dp(12))).Push(gtx.Ops).Pop()
+					paint.Fill(gtx.Ops, cardBg)
+
+					return layout.UniformInset(unit.Dp(24)).Layout(gtx, func(gtx C) D {
+						btnText := "✔ Validate & Save"
+						btnColor := successColor
+						if uv.validating {
+							btnText = "Validating..."
+							btnColor = runningColor
+							gtx = gtx.Disabled()
+						}
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(func(gtx C) D {
+								return uv.gui.layoutFormRow(gtx, "🔑 SID Cookie", &uv.sidEditor)
+							}),
+							layout.Rigid(func(gtx C) D {
+								btn := material.Button(uv.gui.th, &uv.validateBtn, btnText)
+								btn.Background = btnColor
+								btn.Color = bgColor
+								btn.CornerRadius = unit.Dp(8)
+								return btn.Layout(gtx)
+							}),
+						)
+					})
+				})
+			})
+		}),
+		// Users List
+		layout.Flexed(1, func(gtx C) D {
+			return layout.Inset{Left: unit.Dp(24), Right: unit.Dp(24), Bottom: unit.Dp(24)}.Layout(gtx, func(gtx C) D {
+				if len(uv.users) == 0 {
+					return uv.layoutEmptyState(gtx)
+				}
+
+				uv.list.Axis = layout.Vertical
+				return material.List(uv.gui.th, &uv.list).Layout(gtx, len(uv.users), func(gtx C, i int) D {
+					return layout.Inset{Bottom: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+						return uv.layoutUserCard(gtx, i)
+					})
+				})
+			})
+		}),
+	)
+}
+
+func (uv *UsersView) layoutEmptyState(gtx C) D {
+	return widget.Border{
+		Color:        borderColor,
+		Width:        unit.Dp(1),
+		CornerRadius: unit.Dp(12),
+	}.Layout(gtx, func(gtx C) D {
+		defer clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Max}, gtx.Dp(unit.Dp(12))).Push(gtx.Ops).Pop()
+		paint.Fill(gtx.Ops, cardBg)
+
+		return layout.Center.Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx C) D {
+					label := material.H6(uv.gui.th, "📭")
+					label.TextSize = unit.Sp(48)
+					return label.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx C) D {
+					label := material.Body1(uv.gui.th, "No users yet")
+					label.Color = disabledColor
+					return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, label.Layout)
+				}),
+			)
+		})
+	})
+}
+
+func (uv *UsersView) layoutUserCard(gtx C, index int) D {
+	user := uv.users[index]
+
+	return widget.Border{
+		Color:        borderColor,
+		Width:        unit.Dp(1),
+		CornerRadius: unit.Dp(12),
+	}.Layout(gtx, func(gtx C) D {
+		defer clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Max}, gtx.Dp(unit.Dp(12))).Push(gtx.Ops).Pop()
+		paint.Fill(gtx.Ops, cardBg)
+
+		return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				// Header with order number and delete button
+				layout.Rigid(func(gtx C) D {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Flexed(1, func(gtx C) D {
+							label := material.H6(uv.gui.th, "👤 "+user.Username)
+							label.Color = accentColor
+							label.TextSize = unit.Sp(16)
+							return label.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx C) D {
+							btn := material.Button(uv.gui.th, &uv.deleteButtons[index], "🗑️ Delete")
+							btn.Background = dangerColor
+							btn.Color = bgColor
+							btn.CornerRadius = unit.Dp(6)
+							btn.TextSize = unit.Sp(12)
+							return btn.Layout(gtx)
+						}),
+					)
+				}),
+				// Divider
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
+						paint.FillShape(gtx.Ops, borderColor, clip.Rect{
+							Max: image.Point{X: gtx.Constraints.Max.X, Y: gtx.Dp(unit.Dp(1))},
+						}.Op())
+						return D{Size: image.Point{X: gtx.Constraints.Max.X, Y: gtx.Dp(unit.Dp(1))}}
+					})
+				}),
+				// User details
+				layout.Rigid(func(gtx C) D {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx C) D {
+							return uv.gui.layoutInfoRow(gtx, "SID", user.SID)
+						}),
+					)
+				}),
+			)
+		})
+	})
 }
 
 func (bv *BookingsView) Layout(gtx C) D {
@@ -785,33 +1147,33 @@ func (bv *BookingsView) layoutBookingCard(gtx C, index int) D {
 				layout.Rigid(func(gtx C) D {
 					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "User", booking.UserName)
+							return bv.gui.layoutInfoRow(gtx, "User", booking.UserName)
 						}),
 						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "📅 Event", booking.EventName)
-						}),
-
-						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "🕐 Date", booking.EventDate)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "📍 Venue", booking.EventVenue)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "🎫 Section", booking.Section)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "💺 Seat", booking.SeatInfo)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "🎟️ Ticket", booking.TicketInfo)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "🔢 Quantity", booking.TicketQty)
+							return bv.gui.layoutInfoRow(gtx, "📅 Event", booking.EventName)
 						}),
 
 						layout.Rigid(func(gtx C) D {
-							return bv.layoutInfoRow(gtx, "💵 Total", booking.Total)
+							return bv.gui.layoutInfoRow(gtx, "🕐 Date", booking.EventDate)
+						}),
+						layout.Rigid(func(gtx C) D {
+							return bv.gui.layoutInfoRow(gtx, "📍 Venue", booking.EventVenue)
+						}),
+						layout.Rigid(func(gtx C) D {
+							return bv.gui.layoutInfoRow(gtx, "🎫 Section", booking.Section)
+						}),
+						layout.Rigid(func(gtx C) D {
+							return bv.gui.layoutInfoRow(gtx, "💺 Seat", booking.SeatInfo)
+						}),
+						layout.Rigid(func(gtx C) D {
+							return bv.gui.layoutInfoRow(gtx, "🎟️ Ticket", booking.TicketInfo)
+						}),
+						layout.Rigid(func(gtx C) D {
+							return bv.gui.layoutInfoRow(gtx, "🔢 Quantity", booking.TicketQty)
+						}),
+
+						layout.Rigid(func(gtx C) D {
+							return bv.gui.layoutInfoRow(gtx, "💵 Total", booking.Total)
 						}),
 					)
 				}),
@@ -820,7 +1182,7 @@ func (bv *BookingsView) layoutBookingCard(gtx C, index int) D {
 	})
 }
 
-func (bv *BookingsView) layoutInfoRow(gtx C, label, value string) D {
+func (g *GUI) layoutInfoRow(gtx C, label, value string) D {
 	if value == "" {
 		return D{}
 	}
@@ -828,7 +1190,7 @@ func (bv *BookingsView) layoutInfoRow(gtx C, label, value string) D {
 	return layout.Inset{Bottom: unit.Dp(10)}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 			layout.Rigid(func(gtx C) D {
-				l := material.Body2(bv.gui.th, label)
+				l := material.Body2(g.th, label)
 				l.Color = purpleAccent
 				l.TextSize = unit.Sp(13)
 				return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
@@ -837,7 +1199,7 @@ func (bv *BookingsView) layoutInfoRow(gtx C, label, value string) D {
 				})
 			}),
 			layout.Flexed(1, func(gtx C) D {
-				v := material.Body2(bv.gui.th, value)
+				v := material.Body2(g.th, value)
 				v.Color = textColor
 				v.TextSize = unit.Sp(13)
 				return v.Layout(gtx)
@@ -863,16 +1225,21 @@ func (g *GUI) startBot(bot *Bot) {
 		log.SetOutput(logWriter)
 		defer log.SetOutput(os.Stderr)
 
-		services.ScraperWithLoop(
+		cfg := services.ScraperConfig{
+			BaseURL: "https://tixcraft.com/ticket/area",
+
+			EventID:        bot.config.EventID,
+			TicketID:       bot.config.TicketID,
+			Filter:         bot.config.Filter,     // Filter for seat area
+			PerOrderTicket: bot.config.Quantity,   // How many to buy at once
+			MaxTickets:     bot.config.MaxTickets, // Total tickets you want
+			SessionID:      bot.config.User.SID,
+			Loop:           true, // Keep retrying until success
+		}
+
+		services.RunScraper(
 			ctx, // << add ctx
-			"https://tixcraft.com/ticket/area",
-			bot.config.EventID,
-			bot.config.TicketID,
-			bot.config.Filter,
-			bot.config.Quantity,
-			bot.config.MaxTickets,
-			bot.config.Loop,
-			bot.config.SID,
+			cfg,
 		)
 	}()
 }
@@ -883,7 +1250,8 @@ func (g *GUI) saveBots() {
 		configs[i] = BotConfig{
 			ID:         bot.config.ID,
 			Name:       bot.nameEditor.Text(),
-			SID:        bot.sidEditor.Text(),
+			User:       bot.config.User,
+			SID:        bot.config.SID,
 			EventID:    bot.eventIDEditor.Text(),
 			TicketID:   bot.ticketIDEditor.Text(),
 			Filter:     bot.filterEditor.Text(),
@@ -912,7 +1280,6 @@ func (g *GUI) loadBots() {
 		bot := &Bot{
 			config:           cfg,
 			nameEditor:       widget.Editor{SingleLine: true},
-			sidEditor:        widget.Editor{SingleLine: true},
 			eventIDEditor:    widget.Editor{SingleLine: true},
 			ticketIDEditor:   widget.Editor{SingleLine: true},
 			filterEditor:     widget.Editor{SingleLine: true},
@@ -921,7 +1288,6 @@ func (g *GUI) loadBots() {
 		}
 
 		bot.nameEditor.SetText(cfg.Name)
-		bot.sidEditor.SetText(cfg.SID)
 		bot.eventIDEditor.SetText(cfg.EventID)
 		bot.ticketIDEditor.SetText(cfg.TicketID)
 		bot.filterEditor.SetText(cfg.Filter)
@@ -929,8 +1295,49 @@ func (g *GUI) loadBots() {
 		bot.maxTicketsEditor.SetText(cfg.MaxTickets)
 		bot.loopCheckbox.Value = cfg.Loop
 
+		// Initialize user dropdown selection
+		for i, user := range g.usersView.users {
+			if user.SID == cfg.User.SID {
+				bot.userDropdown.selected = i
+				break
+			}
+		}
+
 		g.bots = append(g.bots, bot)
 	}
+}
+
+func (g *GUI) layoutUserDropdown(gtx C, bot *Bot) D {
+	return layout.Inset{Bottom: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				l := material.Caption(g.th, "👤 User")
+				l.Color = purpleAccent
+				l.TextSize = unit.Sp(13)
+				return layout.Inset{Bottom: unit.Dp(6)}.Layout(gtx, l.Layout)
+			}),
+			layout.Rigid(func(gtx C) D {
+				if len(g.usersView.users) == 0 {
+					return material.Body2(g.th, "No users available. Add users in the Accounts tab.").Layout(gtx)
+				}
+
+				// Create a slice of user names for the dropdown
+				userNames := make([]string, len(g.usersView.users))
+				for i, u := range g.usersView.users {
+					userNames[i] = u.Username
+				}
+				bot.userDropdown.Options = userNames
+
+				// if a user is selected, update the bot config
+				if bot.userDropdown.selected < len(g.usersView.users) {
+					bot.config.User = g.usersView.users[bot.userDropdown.selected]
+					bot.config.SID = g.usersView.users[bot.userDropdown.selected].SID
+				}
+
+				return bot.userDropdown.Layout(gtx, g.th)
+			}),
+		)
+	})
 }
 
 type LogView struct {

@@ -1,691 +1,43 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"image"
-	"image/png"
-	"io/ioutil"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
-	"github.com/disintegration/imaging"
-	"github.com/otiai10/gosseract/v2"
+	"github.com/joho/godotenv"
 )
 
-// SeatFilter checks if the text contains the filter string
-func SeatFilter(text string, filter string) bool {
-	return !strings.Contains(text, filter)
-}
-
-// enhanceImage processes image to improve OCR accuracy
-func enhanceImage(inputPath string) (string, error) {
-	file, err := os.Open(inputPath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	img, _, err := image.Decode(file)
-	if err != nil {
-		return "", err
-	}
-
-	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-
-	if width < 1000 {
-		scale := 1000.0 / float64(width)
-		img = imaging.Resize(img, int(float64(width)*scale), int(float64(height)*scale), imaging.Lanczos)
-	}
-
-	img = imaging.AdjustContrast(img, 20)
-	img = imaging.Sharpen(img, 1.0)
-	img = imaging.Grayscale(img)
-
-	outputPath := "temp_enhanced.png"
-	out, err := os.Create(outputPath)
-	if err != nil {
-		return "", err
-	}
-	defer out.Close()
-
-	err = png.Encode(out, img)
-	if err != nil {
-		return "", err
-	}
-
-	return outputPath, nil
-}
-
-// isValidCaptcha validates captcha text: exactly 4 alphabetic characters
-func isValidCaptcha(text string) bool {
-	text = strings.TrimSpace(text)
-	if len(text) != 4 {
-		return false
-	}
-	// Check if all characters are alphabets
-	matched, _ := regexp.MatchString("^[a-zA-Z]{4}$", text)
-	return matched
-}
-
-// processCaptcha handles captcha image extraction and OCR
-func processCaptcha(ctx context.Context) (string, error) {
-	// Check for cancellation before processing
-	select {
-	case <-ctx.Done():
-		return "", fmt.Errorf("captcha processing cancelled")
-	default:
-	}
-
-	var imageBase64 string
-
-	err := chromedp.Run(ctx,
-		chromedp.WaitVisible("#TicketForm_verifyCode-image", chromedp.ByID),
-		chromedp.Sleep(1*time.Second),
-		chromedp.Evaluate(`
-			(function() {
-				const img = document.querySelector('#TicketForm_verifyCode-image');
-				const canvas = document.createElement('canvas');
-				canvas.width = img.naturalWidth || img.width;
-				canvas.height = img.naturalHeight || img.height;
-				const ctx = canvas.getContext('2d');
-				ctx.drawImage(img, 0, 0);
-				return canvas.toDataURL('image/png').split(',')[1];
-			})()
-		`, &imageBase64),
-	)
-	if err != nil {
-		return "", fmt.Errorf("error getting captcha image: %w", err)
-	}
-
-	// Check for cancellation after chromedp operations
-	select {
-	case <-ctx.Done():
-		return "", fmt.Errorf("captcha processing cancelled")
-	default:
-	}
-
-	imageData, err := base64.StdEncoding.DecodeString(imageBase64)
-	if err != nil {
-		return "", fmt.Errorf("error decoding captcha image: %w", err)
-	}
-
-	if err := os.WriteFile("temp.png", imageData, 0644); err != nil {
-		return "", fmt.Errorf("error writing temp image: %w", err)
-	}
-
-	enhancedPath, err := enhanceImage("temp.png")
-	if err != nil {
-		return "", fmt.Errorf("error enhancing image: %w", err)
-	}
-
-	// Check for cancellation before OCR
-	select {
-	case <-ctx.Done():
-		return "", fmt.Errorf("captcha processing cancelled")
-	default:
-	}
-
-	t_client := gosseract.NewClient()
-	defer t_client.Close()
-	t_client.SetLanguage("eng")
-
-	t_client.SetWhitelist("abcdefghijklmnopqrstuvwxyz")
-	t_client.SetPageSegMode(gosseract.PSM_AUTO)
-	t_client.SetImage(enhancedPath)
-
-	text, err := t_client.Text()
-	if err != nil {
-		return "", fmt.Errorf("error performing OCR: %w", err)
-	}
-
-	return strings.TrimSpace(text), nil
-}
-
-// bypassCaptcha repeatedly attempts to solve captcha until valid
-func bypassCaptcha(ctx context.Context) (string, error) {
-	log.Println("Step 2: Bypassing captcha...")
-
-	maxAttempts := 20
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// Check for cancellation at the start of each attempt
-		select {
-		case <-ctx.Done():
-			log.Println("Captcha bypass cancelled by user")
-			return "", fmt.Errorf("captcha bypass cancelled")
-		default:
-		}
-
-		log.Printf("Captcha attempt %d/%d...", attempt, maxAttempts)
-
-		captchaText, err := processCaptcha(ctx)
-		if err != nil {
-			// Check if error is due to cancellation
-			if ctx.Err() != nil {
-				return "", fmt.Errorf("captcha bypass cancelled")
-			}
-			log.Printf("Error processing captcha: %v", err)
-			continue
-		}
-
-		log.Printf("OCR result: '%s'", captchaText)
-
-		if isValidCaptcha(captchaText) {
-			log.Println("Valid captcha obtained!")
-			return captchaText, nil
-		}
-
-		log.Printf("Invalid captcha (length: %d, alphabetic: %v). Reloading...",
-			len(captchaText),
-			regexp.MustCompile("^[a-zA-Z]+$").MatchString(captchaText))
-
-		// Check for cancellation before reload
-		select {
-		case <-ctx.Done():
-			log.Println("Captcha bypass cancelled by user")
-			return "", fmt.Errorf("captcha bypass cancelled")
-		default:
-		}
-
-		// Reload page to get new captcha
-		err = chromedp.Run(ctx,
-			chromedp.Reload(),
-			chromedp.Sleep(2*time.Second),
-		)
-		if err != nil {
-			return "", fmt.Errorf("error reloading page: %w", err)
-		}
-	}
-
-	return "", fmt.Errorf("failed to obtain valid captcha after %d attempts", maxAttempts)
-}
-
-// reserveSeat attempts to reserve the seat with the given captcha
-
-// Helper function to save a screenshot
-func saveScreenshot(ctx context.Context, step string) {
-	var buf []byte
-	if err := chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90)); err != nil {
-		log.Println("Failed to take screenshot:", err)
-		return
-	}
-
-	homeDir, _ := os.UserHomeDir()
-	outDir := filepath.Join(homeDir, "Downloads", "chromedp_debug")
-	os.MkdirAll(outDir, os.ModePerm)
-
-	filename := filepath.Join(outDir, fmt.Sprintf("%s-%d.png", step, time.Now().UnixNano()))
-	if err := ioutil.WriteFile(filename, buf, 0644); err != nil {
-		log.Println("Failed to save screenshot:", err)
-		return
-	}
-	fmt.Println("Screenshot saved:", filename)
-}
-
-func reserveSeat(ctx context.Context, captchaText, perOrderTicket, sessionID, seatVal, eventID, ticketID string) (bool, error) {
-	fmt.Println("Starting reservation")
-	time.Sleep(5 * time.Second)
-	select {
-	case <-ctx.Done():
-		log.Println("Reservation cancelled by user")
-		return false, fmt.Errorf("reservation cancelled")
-	default:
-	}
-
-	log.Println("Step 0: Before starting reservation")
-	saveScreenshot(ctx, "before_start")
-
-	log.Println("Step 3: Submitting Reservation...")
-
-	var currentURL string
-	var alertText string
-
-	chromedp.ListenTarget(ctx, func(ev interface{}) {
-		switch e := ev.(type) {
-		case *page.EventJavascriptDialogOpening:
-			alertText = e.Message
-			go func() {
-				if err := chromedp.Run(ctx, page.HandleJavaScriptDialog(true)); err != nil {
-					log.Println("Error handling dialog:", err)
-				}
-			}()
-		}
-	})
-
-	// Capture screenshot before getting URL
-	saveScreenshot(ctx, "before_get_url")
-	err := chromedp.Run(ctx, chromedp.Location(&currentURL))
-	fmt.Printf("cur: %s\n", currentURL)
-	if err != nil {
-		return false, fmt.Errorf("error getting current URL: %w", err)
-	}
-	saveScreenshot(ctx, "after_get_url")
-
-	// Set ticket quantity
-	saveScreenshot(ctx, "before_set_ticket")
-	log.Println("Setting ticket quantity...")
-	err = chromedp.Run(ctx,
-		chromedp.WaitVisible("#ticketPriceList", chromedp.ByQueryAll),
-		chromedp.SetValue("#ticketPriceList select", perOrderTicket, chromedp.ByQuery),
-	)
-	saveScreenshot(ctx, "after_set_ticket")
-	if err != nil {
-		return false, fmt.Errorf("error setting ticket quantity: %w", err)
-	}
-
-	// Fill captcha and submit
-	saveScreenshot(ctx, "before_captcha_submit")
-	log.Println("Filling captcha and submitting...")
-	err = chromedp.Run(ctx,
-		chromedp.Sleep(2*time.Second),
-		chromedp.WaitVisible("#TicketForm_verifyCode", chromedp.ByQuery),
-		chromedp.SetValue("#TicketForm_verifyCode", captchaText, chromedp.ByQuery),
-		chromedp.Click("#TicketForm_agree", chromedp.ByQueryAll),
-		chromedp.Sleep(2*time.Second),
-		chromedp.ScrollIntoView(`//button[text()='Submit']`, chromedp.BySearch),
-		chromedp.Click(`//button[text()='Submit']`, chromedp.BySearch),
-		chromedp.Click(`//button[text()='Submit']`, chromedp.BySearch),
-		chromedp.Sleep(4*time.Second),
-	)
-	saveScreenshot(ctx, "after_captcha_submit")
-	if err != nil {
-		return false, fmt.Errorf("error submitting form: %w", err)
-	}
-
-	saveScreenshot(ctx, "before_verify_result")
-	var newURL string
-	err = chromedp.Run(ctx, chromedp.Location(&newURL))
-	fmt.Printf("new: %s\n", newURL)
-	saveScreenshot(ctx, "after_verify_result")
-	if err != nil {
-		return false, fmt.Errorf("error getting new URL: %w", err)
-	}
-
-	if newURL != currentURL {
-		log.Println("Successfully Reserved seat!", newURL)
-		return true, nil
-	}
-
-	if alertText != "" {
-		log.Println("Website alert detected:", alertText)
-		return false, fmt.Errorf("reservation failed: %s", alertText)
-	}
-
-	return false, fmt.Errorf("reservation failed: unknown error")
-}
-
-// sleepWithCancel sleeps but exits early if ctx is cancelled.
-// returns false if cancelled, true if completed normally.
-func sleepWithCancel(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
+func init() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("Warning: .env file not found or error loading it")
 	}
 }
 
-// ScraperWithLoop wraps the scraper with loop functionality
-func ScraperWithLoop(
-	ctx context.Context,
-	base_url string,
-	event_id string,
-	ticket_id string,
-	filter string,
-	per_order_ticket string,
-	max_tickets string,
-	loop bool,
-	session_id string,
-) {
-
-	// ------------------------------
-	// Non-loop mode
-	// ------------------------------
-	if !loop {
-		select {
-		case <-ctx.Done():
-			log.Println("Scraper stopped before starting (single run mode)")
-			return
-		default:
-		}
-
-		Scraper(ctx, base_url, event_id, ticket_id, filter, per_order_ticket, session_id)
-		return
-	}
-
-	// ------------------------------
-	// Loop mode
-	// ------------------------------
-	quantity, err := strconv.Atoi(per_order_ticket)
-	if err != nil {
-		log.Printf("Invalid quantity: %s", per_order_ticket)
-		return
-	}
-
-	maxTickets, err := strconv.Atoi(max_tickets)
-	if err != nil {
-		log.Printf("Invalid max tickets: %s", max_tickets)
-		return
-	}
-
-	if quantity <= 0 || maxTickets <= 0 {
-		log.Println("Quantity and max tickets must be greater than 0")
-		return
-	}
-
-	numLoops := (maxTickets + quantity - 1) / quantity
-	log.Printf("Loop mode enabled: Running %d iterations to buy %d tickets (target: %d)",
-		numLoops, quantity*numLoops, maxTickets)
-
-	// ------------------------------
-	// Main loop
-	// ------------------------------
-	for i := 1; i <= numLoops; {
-		// Check for cancellation
-		select {
-		case <-ctx.Done():
-			log.Println("Scraper stopped by user.")
-			return
-		default:
-		}
-
-		log.Printf("=== Starting iteration %d/%d ===", i, numLoops)
-
-		success := Scraper(ctx, base_url, event_id, ticket_id, filter, per_order_ticket, session_id)
-
-		// Retry failed iteration
-		if !success {
-			log.Printf("Iteration %d failed, retrying...", i)
-
-			// Sleep with cancel support
-			if !sleepWithCancel(ctx, 3*time.Second) {
-				log.Println("Scraper stopped during retry wait.")
-				return
-			}
-
-			continue
-		}
-
-		log.Printf("Iteration %d completed successfully", i)
-		i++ // increment on success
-
-		if i <= numLoops {
-			log.Printf("Waiting 3 seconds before next iteration...")
-
-			// Sleep with cancel support
-			if !sleepWithCancel(ctx, 3*time.Second) {
-				log.Println("Scraper stopped during delay between iterations.")
-				return
-			}
-		}
-	}
-
-	log.Printf("=== All %d iterations complete successfully! ===", numLoops)
+type ScraperConfig struct {
+	BaseURL        string
+	EventID        string
+	TicketID       string
+	Filter         string
+	PerOrderTicket string
+	MaxTickets     string
+	SessionID      string
+	Loop           bool
 }
 
-// Scraper main function with simplified flow
-func Scraper(ctx context.Context, base_url string, event_id string, ticket_id string, filter string, per_order_ticket string, session_id string) bool {
-	// Check for cancellation at the very start
-	select {
-	case <-ctx.Done():
-		log.Println("Scraper stopped before starting")
-		return false
-	default:
-	}
-
-	log.Println("Starting scraper...")
-
-	options := append(
-		chromedp.DefaultExecAllocatorOptions[:],
-		// chromedp.Flag("headless", false),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-	)
-
-	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), options...)
-	defer cancel()
-
-	// Create a new context that inherits cancellation from the parent ctx
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-	defer browserCancel()
-
-	// Create a child context that will be cancelled when either parent ctx or timeout occurs
-	timeoutCtx, timeoutCancel := context.WithTimeout(browserCtx, 60*time.Second)
-	defer timeoutCancel()
-
-	// Monitor parent context cancellation
-	go func() {
-		<-ctx.Done()
-		log.Println("Parent context cancelled, cancelling browser context...")
-		browserCancel()
-	}()
-
-	url := fmt.Sprintf("%s/%s/%s", base_url, event_id, ticket_id)
-	log.Printf("Scraping url: %s\n", url)
-
-	log.Println("Navigating...")
-
-	// Check for cancellation before navigation
-	select {
-	case <-ctx.Done():
-		log.Println("Scraper stopped before navigation")
-		return false
-	default:
-	}
-
-	var username string
-	err := chromedp.Run(timeoutCtx,
-		network.SetCookie("SID", session_id).
-			WithDomain("tixcraft.com").
-			WithPath("/"),
-		chromedp.Navigate(url),
-		chromedp.WaitVisible("body", chromedp.ByQueryAll),
-		chromedp.WaitVisible("#header", chromedp.ByQueryAll),
-		chromedp.Text(".user-name", &username, chromedp.ByQuery),
-	)
-
-	fmt.Println(err)
-	if err != nil || strings.TrimSpace(username) == "" {
-		// Check if error is due to cancellation
-		if ctx.Err() != nil {
-			log.Println("Scraper stopped during navigation")
-			return false
-		}
-		log.Println("❌ Stopping: user not found (not logged in or session expired), Please update the SID")
-		return false
-	}
-
-	log.Println("Logged in as:", username)
-
-	// Check for cancellation after login verification
-	select {
-	case <-ctx.Done():
-		log.Println("Scraper stopped after login verification")
-		return false
-	default:
-	}
-
-	var seatVal string
-
-	// STEP 1: Select seat
-	log.Println("Step 1: Selecting seat...")
-
-	// Check for cancellation before seat selection
-	select {
-	case <-ctx.Done():
-		log.Println("Scraper stopped before seat selection")
-		return false
-	default:
-	}
-
-	err = chromedp.Run(timeoutCtx,
-		chromedp.WaitVisible("//button[text()='Accept All']", chromedp.BySearch),
-		chromedp.Click("//button[text()='Accept All']", chromedp.BySearch),
-		chromedp.WaitVisible("#selectseat", chromedp.ByQuery),
-		chromedp.WaitVisible(".area-list", chromedp.ByQueryAll),
-		chromedp.Sleep(2*time.Second),
-		network.Enable(),
-		chromedp.EvaluateAsDevTools(fmt.Sprintf(`
-			(function(){
-				const filter = "%s";
-				const links = document.querySelectorAll(".area-list a");
-
-				for (let a of links){
-					if (!a.innerText.includes(filter)){
-						let directText = "";
-						for (const node of a.childNodes) {
-							if (node.nodeType === Node.TEXT_NODE) {
-								directText += node.textContent.trim();
-							}
-						}
-						a.click();
-						return directText;
-					}
-				}
-				return "";
-			})()
-		`, filter), &seatVal),
-	)
-
-	if err != nil {
-		// Check if error is due to cancellation
-		if ctx.Err() != nil {
-			log.Println("Scraper stopped during seat selection")
-			return false
-		}
-		log.Println("Error during seat selection:", err)
-		return false
-	}
-
-	log.Printf("Selected seat: %s", seatVal)
-
-	// Check for cancellation after seat selection
-	select {
-	case <-ctx.Done():
-		log.Println("Scraper stopped after seat selection")
-		return false
-	default:
-	}
-
-	// Main retry loop for captcha + reservation
-	maxRetries := 10
-	for retry := 1; retry <= maxRetries; retry++ {
-		// Check for cancellation at the start of each retry
-		select {
-		case <-ctx.Done():
-			log.Println("Scraper stopped during retry loop")
-			return false
-		default:
-		}
-
-		log.Printf("\n=== Attempt %d/%d ===", retry, maxRetries)
-
-		// STEP 2: Bypass captcha
-		captchaText, err := bypassCaptcha(timeoutCtx)
-		if err != nil {
-			// Check if error is due to cancellation
-			if ctx.Err() != nil {
-				log.Println("Scraper stopped during captcha bypass")
-				return false
-			}
-			log.Printf("Failed to bypass captcha: %v", err)
-			continue
-		}
-
-		// Check for cancellation before reservation
-		select {
-		case <-ctx.Done():
-			log.Println("Scraper stopped before reservation")
-			return false
-		default:
-		}
-
-		// STEP 3: Reserve seat
-		success, err := reserveSeat(timeoutCtx, captchaText, per_order_ticket, session_id, seatVal, event_id, ticket_id)
-		if success {
-			// Check for cancellation before checkout
-			select {
-			case <-ctx.Done():
-				log.Println("Scraper stopped before checkout (reservation succeeded)")
-				return true // Consider it success since reservation worked
-			default:
-			}
-
-			// STEP 4: Checkout and extract info
-			bookingInfo, err := checkoutAndExtractInfo(timeoutCtx)
-			if err != nil {
-				// Check if error is due to cancellation
-				if ctx.Err() != nil {
-					log.Println("Scraper stopped during checkout")
-					return true // Consider it success since reservation worked
-				}
-				log.Printf("Error during checkout: %v", err)
-				// Still consider it a success since reservation worked
-			} else {
-				// Add the session and seat info to the booking
-				bookingInfo.SessionID = session_id
-				bookingInfo.Seat = seatVal
-				bookingInfo.EventID = event_id
-				bookingInfo.TicketID = ticket_id
-				bookingInfo.NumOfTickets = per_order_ticket
-				bookingInfo.UserName = username
-
-				// Save complete booking info
-				saveBooking(*bookingInfo)
-			}
-
-			log.Println("Scraper finished successfully.")
-			time.Sleep(5 * time.Second)
-			return true
-		}
-
-		// If reservation failed, log and retry
-		log.Printf("Reservation failed: %v", err)
-		log.Println("Reloading page for retry...")
-
-		// Check for cancellation before reload
-		select {
-		case <-ctx.Done():
-			log.Println("Scraper stopped before page reload")
-			return false
-		default:
-		}
-
-		err = chromedp.Run(timeoutCtx,
-			chromedp.Reload(),
-			chromedp.Sleep(2*time.Second),
-		)
-		if err != nil {
-			// Check if error is due to cancellation
-			if ctx.Err() != nil {
-				log.Println("Scraper stopped during page reload")
-				return false
-			}
-			log.Printf("Error reloading page: %v", err)
-			return false
-		}
-	}
-
-	log.Printf("Failed after %d attempts", maxRetries)
-	return false
-}
-
-// Booking represents the structure for a single booking entry.
 type Booking struct {
 	SessionID    string `json:"session_id"`
 	Seat         string `json:"seat"`
@@ -705,210 +57,423 @@ type Booking struct {
 	UserName     string `json:"username"`
 }
 
-// checkoutAndExtractInfo extracts booking details from cart and clicks reSelect
-func checkoutAndExtractInfo(ctx context.Context) (*Booking, error) {
-	// Check for cancellation before starting
-	select {
-	case <-ctx.Done():
-		log.Println("Checkout cancelled by user")
-		return nil, fmt.Errorf("checkout cancelled")
-	default:
-	}
-
-	log.Println("Step 4: Extracting checkout information...")
-
-	var orderNumber, eventName, eventDate, eventVenue string
-	var section, seatInfo, ticketInfo string
-	var ticketQty, serviceFee, total string
-
-	err := chromedp.Run(ctx,
-		// Wait for cart table to be visible
-		chromedp.WaitVisible("#cartList", chromedp.ByID),
-		chromedp.Sleep(2*time.Second),
-
-		// Extract order number
-		chromedp.Evaluate(`
-			(function() {
-				const orderNum = document.querySelector('.hex_Order_number');
-				return orderNum ? orderNum.textContent.trim() : '';
-			})()
-		`, &orderNumber),
-
-		// Extract event name
-		chromedp.Evaluate(`
-			(function() {
-				const name = document.querySelector('.ticketEventName');
-				return name ? name.textContent.trim() : '';
-			})()
-		`, &eventName),
-
-		// Extract event date
-		chromedp.Evaluate(`
-			(function() {
-				const date = document.querySelector('.ticketEventDate');
-				if (!date) return '';
-				// Remove the icon and get text
-				const text = date.textContent.trim();
-				return text.replace(/\s+/g, ' ');
-			})()
-		`, &eventDate),
-
-		// Extract event venue
-		chromedp.Evaluate(`
-			(function() {
-				const venue = document.querySelector('.ticketEventVenue');
-				if (!venue) return '';
-				const text = venue.textContent.trim();
-				return text.replace(/\s+/g, ' ');
-			})()
-		`, &eventVenue),
-
-		// Extract section (2nd td in orderTicket row)
-		chromedp.Evaluate(`
-			(function() {
-				const row = document.querySelector('tr.orderTicket');
-				if (!row) return '';
-				const tds = row.querySelectorAll('td');
-				return tds[1] ? tds[1].textContent.trim() : '';
-			})()
-		`, &section),
-
-		// Extract seat info (3rd td in orderTicket row)
-		chromedp.Evaluate(`
-			(function() {
-				const row = document.querySelector('tr.orderTicket');
-				if (!row) return '';
-				const tds = row.querySelectorAll('td');
-				return tds[2] ? tds[2].textContent.trim() : '';
-			})()
-		`, &seatInfo),
-
-		// Extract ticket info (4th td in orderTicket row)
-		chromedp.Evaluate(`
-			(function() {
-				const row = document.querySelector('tr.orderTicket');
-				if (!row) return '';
-				const tds = row.querySelectorAll('td');
-				return tds[3] ? tds[3].textContent.trim() : '';
-			})()
-		`, &ticketInfo),
-
-		// Extract ticket quantity
-		chromedp.Evaluate(`
-			(function() {
-				const qty = document.querySelector('.text-primary.bold');
-				return qty ? qty.textContent.trim() : '';
-			})()
-		`, &ticketQty),
-
-		// Extract service fee
-		chromedp.Evaluate(`
-			(function() {
-				const fee = document.querySelector('#orderFee');
-				return fee ? fee.textContent.trim() : '';
-			})()
-		`, &serviceFee),
-
-		// Extract total
-		chromedp.Evaluate(`
-			(function() {
-				const total = document.querySelector('#orderAmount');
-				return total ? total.textContent.trim() : '';
-			})()
-		`, &total),
+func RunScraper(ctx context.Context, cfg ScraperConfig) {
+	// 1. Setup Chrome Allocator (Do this ONCE)
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		// chromedp.Flag("headless", false),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
 
-	if err != nil {
-		return nil, fmt.Errorf("error extracting checkout info: %w", err)
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancel()
+
+	// 2. Create Browser Context ONCE for all iterations
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	defer browserCancel()
+
+	// Ensure browser is closed when parent context is done
+	go func() {
+		<-ctx.Done()
+		browserCancel()
+	}()
+
+	// 3. Determine Loop Count
+	numLoops := 1
+	quantity, _ := strconv.Atoi(cfg.PerOrderTicket)
+	maxTickets, _ := strconv.Atoi(cfg.MaxTickets)
+
+	if cfg.Loop && quantity > 0 && maxTickets > 0 {
+		numLoops = (maxTickets + quantity - 1) / quantity
+		log.Printf("Loop mode: Running %d iterations", numLoops)
 	}
 
-	// Check for cancellation after extraction
-	select {
-	case <-ctx.Done():
-		log.Println("Checkout cancelled after extraction")
-		return nil, fmt.Errorf("checkout cancelled")
-	default:
+	// 4. Execute Logic
+	isFirstIteration := true
+	for i := 1; i <= numLoops; {
+		select {
+		case <-ctx.Done():
+			log.Println("Scraper stopped by user.")
+			return
+		default:
+		}
+
+		log.Printf("=== Iteration %d/%d ===", i, numLoops)
+
+		// FIXED: Pass browserCtx instead of creating new timeout context
+		// The timeout should be on operations, not the browser itself
+		success := executeBookingFlow(browserCtx, ctx, cfg, isFirstIteration)
+		isFirstIteration = false // Only first iteration dismisses cookie banner
+
+		if success {
+			i++
+			if i <= numLoops {
+				log.Println("Success! Waiting 3 seconds before next...")
+				time.Sleep(3 * time.Second)
+			}
+		} else {
+			log.Println("Iteration failed. Retrying in 2 seconds...")
+			time.Sleep(2 * time.Second)
+		}
 	}
-
-	booking := &Booking{
-		OrderNumber: orderNumber,
-		EventName:   eventName,
-		EventDate:   eventDate,
-		EventVenue:  eventVenue,
-		Section:     section,
-		SeatInfo:    seatInfo,
-		TicketInfo:  ticketInfo,
-		TicketQty:   ticketQty,
-		ServiceFee:  serviceFee,
-		Total:       total,
-	}
-
-	log.Printf("Extracted booking info:")
-	log.Printf("  Order Number: %s", orderNumber)
-	log.Printf("  Event: %s", eventName)
-	log.Printf("  Date: %s", eventDate)
-	log.Printf("  Venue: %s", eventVenue)
-	log.Printf("  Section: %s", section)
-	log.Printf("  Seat: %s", seatInfo)
-	log.Printf("  Ticket: %s", ticketInfo)
-	log.Printf("  Quantity: %s", ticketQty)
-	log.Printf("  Service Fee: %s", serviceFee)
-	log.Printf("  Total: %s", total)
-
-	// Check for cancellation before clicking reSelect
-	select {
-	case <-ctx.Done():
-		log.Println("Checkout cancelled before reSelect")
-		return booking, nil // Return booking info even if cancelled
-	default:
-	}
-
-	// Click reSelect button
-	log.Println("Checkingout...")
-	err = chromedp.Run(ctx,
-		chromedp.WaitVisible("#reSelect", chromedp.ByID),
-		chromedp.Click("#reSelect", chromedp.ByID),
-		chromedp.Sleep(2*time.Second),
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("error clicking reSelect: %w", err)
-	}
-
-	log.Println("Successfully checked out")
-	return booking, nil
+	log.Println("All iterations complete.")
 }
 
-func saveBooking(booking Booking) {
-	// Read existing bookings
-	var bookings []Booking
-	data, err := ioutil.ReadFile("bookings.json")
-	if err == nil {
-		// File exists, unmarshal the data
-		if err := json.Unmarshal(data, &bookings); err != nil {
-			log.Printf("Error unmarshalling bookings.json: %v", err)
-			return
-		}
-	} else if !os.IsNotExist(err) {
-		// An error other than "not found" occurred
-		log.Printf("Error reading bookings.json: %v", err)
-		return
+func executeBookingFlow(ctx context.Context, parentCtx context.Context, cfg ScraperConfig, isFirstIteration bool) bool {
+	// --- Step 1: Navigate & Login Check ---
+	url := fmt.Sprintf("%s/%s/%s", cfg.BaseURL, cfg.EventID, cfg.TicketID)
+	var username string
+
+	log.Println("Navigating to:", url)
+	err := chromedp.Run(ctx,
+		network.SetCookie("SID", cfg.SessionID).WithDomain("tixcraft.com").WithPath("/"),
+		chromedp.Navigate(url),
+		chromedp.WaitVisible("#header", chromedp.ByQuery),
+		chromedp.Text(".user-name", &username, chromedp.ByQuery),
+	)
+
+	if err != nil || strings.TrimSpace(username) == "" {
+		log.Println("❌ Login failed or User not found. Update SID.")
+		return false
+	}
+	log.Printf("Logged in as: %s", username)
+
+	// --- Step 2: Select Seat ---
+	var seatVal string
+
+	// Build actions list conditionally
+	actions := []chromedp.Action{
+		chromedp.WaitVisible("#selectseat", chromedp.ByQuery),
+		chromedp.WaitVisible(".area-list", chromedp.ByQueryAll),
 	}
 
-	// Append the new booking
-	bookings = append(bookings, booking)
+	// Only dismiss cookie banner on first iteration
+	if isFirstIteration {
+		log.Println("First iteration: dismissing cookie banner if present")
+		actions = append([]chromedp.Action{
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				_ = chromedp.Click("//button[text()='Accept All']", chromedp.BySearch).Do(ctx)
+				return nil
+			}),
+		}, actions...)
+	}
 
-	// Marshal the updated bookings slice
-	updatedData, err := json.MarshalIndent(bookings, "", "  ")
+	actions = append(actions,
+		chromedp.EvaluateAsDevTools(fmt.Sprintf(`
+            (function(){
+                const filter = "%s";
+                const links = document.querySelectorAll(".area-list a");
+                for (let a of links){
+                    if (!a.innerText.includes(filter)){
+                        let directText = Array.from(a.childNodes)
+                            .filter(node => node.nodeType === Node.TEXT_NODE)
+                            .map(node => node.textContent.trim())
+                            .join("");
+                        
+                        a.click();
+                        return directText || a.innerText;
+                    }
+                }
+                return "";
+            })()
+        `, cfg.Filter), &seatVal),
+	)
+
+	err = chromedp.Run(ctx, actions...)
+
 	if err != nil {
-		log.Printf("Error marshalling bookings: %v", err)
-		return
+		log.Printf("Error selecting seat: %v", err)
+		return false
+	}
+	log.Printf("Selected seat: %s", seatVal)
+
+	// --- Step 3: Captcha Loop ---
+	maxCaptchaRetries := 10
+	for j := 0; j < maxCaptchaRetries; j++ {
+		if parentCtx.Err() != nil {
+			return false
+		}
+
+		captchaText, err := processCaptcha(ctx)
+		if err != nil {
+			log.Printf("Captcha error: %v", err)
+			reloadPage(ctx)
+			continue
+		}
+
+		log.Printf("Attempting Captcha: %s", captchaText)
+
+		// --- Step 4: Submit & Validate ---
+		var currentURL, newURL string
+		var alertMsg string
+
+		chromedp.ListenTarget(ctx, func(ev interface{}) {
+			if e, ok := ev.(*page.EventJavascriptDialogOpening); ok {
+				alertMsg = e.Message
+				go func() {
+					_ = chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+						return page.HandleJavaScriptDialog(true).Do(c)
+					}))
+				}()
+			}
+		})
+
+		err = chromedp.Run(ctx,
+			chromedp.Location(&currentURL),
+			chromedp.SetValue("#ticketPriceList select", cfg.PerOrderTicket, chromedp.ByQuery),
+			chromedp.SetValue("#TicketForm_verifyCode", captchaText, chromedp.ByQuery),
+			chromedp.Click("#TicketForm_agree", chromedp.ByQuery),
+			chromedp.Click("button[type='submit']", chromedp.ByQuery),
+
+			chromedp.Sleep(2000*time.Millisecond),
+			chromedp.Location(&newURL),
+		)
+
+		if err != nil {
+			log.Printf("Submission error: %v", err)
+			reloadPage(ctx)
+			continue
+		}
+
+		if alertMsg != "" {
+			log.Printf("Website Alert: %s", alertMsg)
+			reloadPage(ctx)
+			continue
+		}
+
+		if newURL != currentURL {
+			log.Println("🎉 Reservation Successful!")
+
+			// --- Step 5: Checkout extraction ---
+			booking, err := fastCheckoutExtract(ctx)
+			if err == nil && booking != nil {
+				booking.SessionID = cfg.SessionID
+				booking.Seat = seatVal
+				booking.EventID = cfg.EventID
+				booking.UserName = username
+				saveBooking(*booking)
+			}
+
+			return true
+		}
+
+		log.Println("URL didn't change, retrying captcha...")
+		reloadPage(ctx)
 	}
 
-	// Write the data back to the file
-	if err := ioutil.WriteFile("bookings.json", updatedData, 0644); err != nil {
-		log.Printf("Error writing to bookings.json: %v", err)
-	} else {
-		log.Println("Successfully saved booking to bookings.json")
+	return false
+}
+
+func reloadPage(ctx context.Context) {
+	_ = chromedp.Run(ctx, chromedp.Reload(), chromedp.Sleep(2*time.Second))
+}
+
+func processCaptcha(ctx context.Context) (string, error) {
+	var base64Data string
+
+	err := chromedp.Run(ctx,
+		chromedp.WaitVisible("#TicketForm_verifyCode-image", chromedp.ByID),
+		chromedp.Sleep(1000*time.Millisecond),
+		chromedp.Evaluate(`
+            (function() {
+                const img = document.querySelector('#TicketForm_verifyCode-image');
+                if (!img.complete || img.naturalWidth === 0) {
+                    return ""; 
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                return canvas.toDataURL('image/png');
+            })()
+        `, &base64Data),
+	)
+	if err != nil {
+		return "", fmt.Errorf("js execution failed: %w", err)
 	}
+
+	if base64Data == "" {
+		return "", fmt.Errorf("image not loaded or empty")
+	}
+
+	parts := strings.Split(base64Data, ",")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid base64 format")
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64: %w", err)
+	}
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	_ = godotenv.Load()
+	apiKey := os.Getenv("OCR_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("missing OCR_API_KEY")
+	}
+
+	writer.WriteField("apikey", apiKey)
+	writer.WriteField("language", "eng")
+	writer.WriteField("scale", "true")
+	writer.WriteField("OCREngine", "2")
+
+	part, err := writer.CreateFormFile("file", "captcha.png")
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := part.Write(imageBytes); err != nil {
+		return "", err
+	}
+
+	writer.Close()
+
+	req, err := http.NewRequest("POST", "https://api.ocr.space/parse/image", body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("api request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if parsed, ok := result["ParsedResults"].([]interface{}); ok && len(parsed) > 0 {
+		if data, ok := parsed[0].(map[string]interface{}); ok {
+			if text, ok := data["ParsedText"].(string); ok {
+				return strings.ToLower(strings.TrimSpace(text)), nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no text found")
+}
+
+// FIXED: Use the same context passed in, don't spawn goroutine with new context
+func fastCheckoutExtract(ctx context.Context) (*Booking, error) {
+	var jsonStr string
+
+	err := chromedp.Run(ctx,
+		chromedp.WaitVisible("#cartList", chromedp.ByID),
+		chromedp.Evaluate(`(function() {
+			const getText = (sel) => {
+				const el = document.querySelector(sel);
+				return el ? el.innerText.trim() : "";
+			};
+			
+			const getCell = (rowIdx, colIdx) => {
+				const row = document.querySelectorAll('tr.orderTicket')[rowIdx];
+				if(!row) return "";
+				const cells = row.querySelectorAll('td');
+				return cells[colIdx] ? cells[colIdx].innerText.trim() : "";
+			};
+
+			const data = {
+				order_number: getText('.hex_Order_number'),
+				event_name: getText('.ticketEventName'),
+				event_date: getText('.ticketEventDate').replace(/\s+/g, ' '),
+				event_venue: getText('.ticketEventVenue').replace(/\s+/g, ' '),
+				ticket_qty: getText('.text-primary.bold'),
+				service_fee: getText('#orderFee'),
+				total: getText('#orderAmount'),
+				section: getCell(0, 1),
+				seat_info: getCell(0, 2),
+				ticket_info: getCell(0, 3)
+			};
+			return JSON.stringify(data);
+		})()`, &jsonStr),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var b Booking
+	if err := json.Unmarshal([]byte(jsonStr), &b); err != nil {
+		return nil, err
+	}
+
+	// FIXED: Click reSelect synchronously using the same context
+	// This ensures navigation completes before next iteration
+	log.Println("Clicking reSelect button...")
+	err = chromedp.Run(ctx,
+		chromedp.Click("#reSelect", chromedp.ByID),
+		// chromedp.Sleep(2*time.Second), // Wait for navigation
+	)
+	if err != nil {
+		log.Printf("Warning: Failed to click reSelect: %v", err)
+	}
+
+	return &b, nil
+}
+
+var fileMutex sync.Mutex
+
+func saveBooking(booking Booking) {
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
+	var bookings []Booking
+	data, err := os.ReadFile("bookings.json")
+	if err == nil {
+		_ = json.Unmarshal(data, &bookings)
+	}
+
+	bookings = append(bookings, booking)
+	updatedData, _ := json.MarshalIndent(bookings, "", "  ")
+	_ = os.WriteFile("bookings.json", updatedData, 0644)
+	log.Println("✅ Booking saved to file.")
+}
+
+func GetUserName(session_id string) (string, error) {
+	options := append(
+		chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("blink-settings", "imagesEnabled=false"),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		// chromedp.Flag("headless", false),
+		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+	)
+
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), options...)
+	defer cancel()
+
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	defer browserCancel()
+
+	timeoutCtx, timeoutCancel := context.WithTimeout(browserCtx, 30*time.Second)
+	defer timeoutCancel()
+
+	var username string
+
+	err := chromedp.Run(timeoutCtx,
+		network.SetCookie("SID", session_id).
+			WithDomain("tixcraft.com").
+			WithPath("/"),
+		chromedp.Navigate("https://tixcraft.com"),
+		chromedp.WaitVisible("#header", chromedp.ByQueryAll),
+		chromedp.Text(".user-name", &username, chromedp.ByQuery),
+	)
+
+	if err != nil || strings.TrimSpace(username) == "" {
+		return "", fmt.Errorf("could not get username")
+	}
+
+	return username, nil
 }
