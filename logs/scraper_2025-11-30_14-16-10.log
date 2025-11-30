@@ -1,0 +1,25 @@
+2025/11/30 14:16:10 scraper.go:107: 🚀 Starting scraper with config: EventID=25_nctdream, TicketID=, Filter=B1看台121區5800
+2025/11/30 14:16:10 scraper.go:107: 🔄 Loop mode: Running 4 iterations
+2025/11/30 14:16:10 scraper.go:107: 🌐 Navigating to initial URL: https://tixcraft.com/activity/game/25_nctdream
+2025/11/30 14:16:17 scraper.go:107: === Iteration 1/4 ===
+2025/11/30 14:16:17 scraper.go:107: 🌐 Current URL: https://tixcraft.com/activity/game/25_nctdream
+2025/11/30 14:16:17 scraper.go:107: 🔄 Running monitorEventPage
+2025/11/30 14:16:17 scraper.go:107: 🔍 Monitoring event page: https://tixcraft.com/activity/game/25_nctdream
+2025/11/30 14:16:25 scraper.go:107: 🔍 Monitoring result: clicked
+2025/11/30 14:16:25 scraper.go:107: ✅ Found available tickets! Proceeding to booking...
+2025/11/30 14:16:26 scraper.go:107: 🌐 Current URL: https://tixcraft.com/ticket/area/25_nctdream/20097
+2025/11/30 14:16:26 scraper.go:107: 🔄 Running executeBookingFlow
+2025/11/30 14:16:26 scraper.go:107: ✅ Logged in as: [Google] Jin Go Sup
+2025/11/30 14:16:26 scraper.go:107: 🔍 Checking for pre-sale code requirement...
+2025/11/30 14:16:26 scraper.go:107: 🔍 Checking for pre-sale code form...
+2025/11/30 14:16:26 scraper.go:107: ✅ No pre-sale code form found, continuing...
+2025/11/30 14:16:26 scraper.go:107: ✅ Selected seat: B1看台121區5800
+2025/11/30 14:16:27 scraper.go:107: ❌ Captcha error: captcha image not loaded yet
+2025/11/30 14:16:32 scraper.go:107: 🔐 Attempting Captcha: jakw
+2025/11/30 14:16:34 scraper.go:107: 🎉 Reservation Successful!
+2025/11/30 14:16:59 scraper.go:107: 🛑 Browser context cancelled by parent
+2025/11/30 14:16:59 scraper.go:107: ❌ Checkout error: failed to extract checkout data: context canceled
+2025/11/30 14:16:59 scraper.go:107: ❌ Iteration failed. Retrying in 2 seconds...
+2025/11/30 14:17:01 scraper.go:107: 🔄 Resetting browser to: https://tixcraft.com/activity/game/25_nctdream
+2025/11/30 14:17:01 scraper.go:107: ⏹️ Scraper stopped by user.
+2025/11/30 14:17:01 scraper.go:107: 🔴 Closing browser instance

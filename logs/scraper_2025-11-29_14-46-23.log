@@ -1,0 +1,8 @@
+2025/11/29 14:46:23 scraper.go:114: 🚀 Starting scraper with config: EventID=25_nctdream, TicketID=, Filter=
+2025/11/29 14:46:23 scraper.go:114: 🔍 Using Chrome profile from: /home/humam/.config/google-chrome
+2025/11/29 14:46:23 scraper.go:114: === Iteration 1/1 ===
+2025/11/29 14:46:23 scraper.go:114: 🔍 Monitoring event page for available tickets...
+2025/11/29 14:46:23 scraper.go:114: 🔍 Monitoring event page: https://tixcraft.com/activity/game/25_nctdream
+2025/11/29 14:46:23 scraper.go:114: ❌ Error monitoring page: chrome failed to start:
+[2022236:2022236:1129/144623.246641:ERROR:chrome/browser/process_singleton_posix.cc:340] Failed to create /home/humam/.config/google-chrome/SingletonLock: File exists (17)
+[2022236:2022236:1129/144623.246851:ERROR:chrome/app/chrome_main_delegate.cc:514] Failed to create a ProcessSingleton for your profile directory. This means that running multiple instances would start multiple browser processes rather than opening a new window in the existing process. Aborting now to avoid profile corruption.

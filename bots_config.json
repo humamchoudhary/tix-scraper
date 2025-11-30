@@ -1,17 +1,21 @@
 [
   {
-    "id": "bot_1763326370",
-    "name": "Test Bot",
+    "id": "bot_1764352788",
+    "name": "Bot #2",
     "user": {
-      "sid": "fs70paln20sv5q9p5k04ahra43",
+      "sid": "bt5t2jdguokp6ir1dbc7tckqof",
       "username": "[Google] Jin Go Sup"
     },
-    "sid": "fs70paln20sv5q9p5k04ahra43",
-    "event_id": "25_twicebus",
-    "ticket_id": "20210",
-    "filter": "A07",
+    "sid": "bt5t2jdguokp6ir1dbc7tckqof",
+    "event_id": "25_nctdream",
+    "ticket_id": "",
+    "filter": "",
     "quantity": "1",
     "max_tickets": "4",
-    "loop": true
+    "pre_sale_code": "",
+    "loop": true,
+    "schedule": true,
+    "start_date": "2025-11-29",
+    "start_time": "01:05"
   }
 ]

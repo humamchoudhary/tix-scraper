@@ -1,0 +1,14 @@
+2025/11/29 14:47:25 scraper.go:112: 🚀 Starting scraper with config: EventID=25_nctdream, TicketID=, Filter=
+2025/11/29 14:47:25 scraper.go:112: === Iteration 1/1 ===
+2025/11/29 14:47:25 scraper.go:112: 🔍 Monitoring event page for available tickets...
+2025/11/29 14:47:25 scraper.go:112: 🔍 Monitoring event page: https://tixcraft.com/activity/game/25_nctdream
+2025/11/29 14:47:32 scraper.go:112: 🔍 Monitoring result: none
+2025/11/29 14:47:32 scraper.go:112: 🔁 No available tickets found (1/100), refreshing 
+2025/11/29 14:47:37 scraper.go:112: 🔍 Monitoring result: clicked
+2025/11/29 14:47:37 scraper.go:112: ✅ Found available tickets! Proceeding to booking...
+2025/11/29 14:47:38 scraper.go:112: ❌ Login failed or User not found. Update SID/TIXUISID.
+2025/11/29 14:47:38 scraper.go:112: ❌ Iteration failed. Retrying in 2 seconds...
+2025/11/29 14:47:40 scraper.go:112: 🔄 Resetting browser to: https://tixcraft.com/activity/game/25_nctdream
+2025/11/29 14:47:40 scraper.go:112: 🛑 Browser context cancelled by parent
+2025/11/29 14:47:40 scraper.go:112: ⏹️ Scraper stopped by user.
+2025/11/29 14:47:40 scraper.go:112: 🔴 Closing browser instance

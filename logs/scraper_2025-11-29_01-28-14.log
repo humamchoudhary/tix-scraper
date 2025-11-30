@@ -1,0 +1,23 @@
+2025/11/29 01:28:14 scraper.go:111: 🚀 Starting scraper with config: EventID=25_richbrian, TicketID=, Filter=
+2025/11/29 01:28:14 scraper.go:111: 🔍 Monitoring event page for available tickets...
+2025/11/29 01:28:14 scraper.go:111: 🔍 Monitoring event page: https://tixcraft.com/activity/game/25_richbrian
+2025/11/29 01:28:21 scraper.go:111: 🔍 Monitoring result: none
+2025/11/29 01:28:21 scraper.go:111: 🔁 No available tickets found (1/1000), refreshing in 2 seconds...
+2025/11/29 01:28:27 scraper.go:111: 🔍 Monitoring result: clicked
+2025/11/29 01:28:27 scraper.go:111: ✅ Found available tickets! Proceeding to booking...
+2025/11/29 01:28:27 scraper.go:111: 🔄 Loop mode: Running 4 iterations
+2025/11/29 01:28:27 scraper.go:111: === Iteration 1/4 ===
+2025/11/29 01:28:28 scraper.go:111: ✅ Logged in as: [Google] Jin Go Sup
+2025/11/29 01:28:28 scraper.go:111: 🔍 Checking for pre-sale code requirement...
+2025/11/29 01:28:28 scraper.go:111: 🔍 Checking for pre-sale code form...
+2025/11/29 01:28:28 scraper.go:111: ✅ No pre-sale code form found, continuing...
+2025/11/29 01:28:28 scraper.go:111: ✅ Selected seat: 一樓站區
+2025/11/29 01:28:29 scraper.go:111: ❌ Captcha error: captcha image not loaded yet
+2025/11/29 01:28:33 scraper.go:111: 🔐 Attempting Captcha: paya
+2025/11/29 01:28:43 scraper.go:111: 🔁 URL didn't change, retrying captcha... (2/8)
+2025/11/29 01:28:54 scraper.go:111: 🔐 Attempting Captcha: gico
+2025/11/29 01:28:56 scraper.go:111: 🎉 Reservation Successful!
+2025/11/29 01:28:58 scraper.go:111: 🛑 Browser context cancelled by parent
+2025/11/29 01:28:58 scraper.go:111: ✅ Success! Waiting 1 second before next...
+2025/11/29 01:28:59 scraper.go:111: ⏹️ Scraper stopped by user.
+2025/11/29 01:28:59 scraper.go:111: 🔴 Closing browser instance

@@ -1,0 +1,22 @@
+2025/11/29 14:35:59 scraper.go:112: 🚀 Starting scraper with config: EventID=25_nctdream, TicketID=, Filter=
+2025/11/29 14:35:59 scraper.go:112: === Iteration 1/1 ===
+2025/11/29 14:35:59 scraper.go:112: 🔍 Monitoring event page for available tickets...
+2025/11/29 14:35:59 scraper.go:112: 🔍 Monitoring event page: https://tixcraft.com/activity/game/25_nctdream
+2025/11/29 14:36:04 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:05 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:07 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:08 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:09 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:10 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:11 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:12 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:13 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:14 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:14 scraper.go:112: 🔁 No available tickets found (10/100), refreshing...
+2025/11/29 14:36:15 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:17 scraper.go:112: 🔍 Monitoring result: error: Failed to execute 'querySelector' on 'Document': 'button:contains("Find tickets")' is not a valid selector.
+2025/11/29 14:36:18 scraper.go:112: 🛑 Browser context cancelled by parent
+2025/11/29 14:36:18 scraper.go:112: 🛑 Monitoring cancelled by context
+2025/11/29 14:36:18 scraper.go:112: ❌ Error monitoring event page: monitoring cancelled
+2025/11/29 14:36:20 scraper.go:112: ⏹️ Scraper stopped by user.
+2025/11/29 14:36:20 scraper.go:112: 🔴 Closing browser instance

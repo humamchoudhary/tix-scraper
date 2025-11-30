@@ -1,0 +1,3 @@
+2025/11/30 14:01:13 scraper.go:107: 🚀 Starting scraper with config: EventID=25_nctdream, TicketID=, Filter=
+2025/11/30 14:01:13 scraper.go:107: 🔄 Loop mode: Running 4 iterations
+2025/11/30 14:01:13 scraper.go:107: 🌐 Navigating to initial URL: https://tixcraft.com/activity/game/25_nctdream

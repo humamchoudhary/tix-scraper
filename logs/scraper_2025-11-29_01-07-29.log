@@ -1,0 +1,7 @@
+2025/11/29 01:07:29 scraper.go:111: 🚀 Starting scraper with config: EventID=, TicketID=, Filter=
+2025/11/29 01:07:29 scraper.go:111: 🔍 Monitoring event page for available tickets...
+2025/11/29 01:07:29 scraper.go:111: 🔍 Monitoring event page: https://tixcraft.com/activity/game/
+2025/11/29 01:07:32 scraper.go:111: ❌ Error monitoring page: context canceled
+2025/11/29 01:07:32 scraper.go:111: 🛑 Monitoring cancelled by context
+2025/11/29 01:07:32 scraper.go:111: ❌ Error monitoring event page: monitoring cancelled
+2025/11/29 01:07:32 scraper.go:111: 🔴 Closing browser instance
