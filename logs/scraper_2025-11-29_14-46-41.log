@@ -1,5 +1,0 @@
-2025/11/29 14:46:41 scraper.go:114: 🚀 Starting scraper with config: EventID=25_nctdream, TicketID=, Filter=
-2025/11/29 14:46:41 scraper.go:114: 🔍 Using Chrome profile from: /home/humam/.config/google-chrome
-2025/11/29 14:46:41 scraper.go:114: === Iteration 1/1 ===
-2025/11/29 14:46:41 scraper.go:114: 🔍 Monitoring event page for available tickets...
-2025/11/29 14:46:41 scraper.go:114: 🔍 Monitoring event page: https://tixcraft.com/activity/game/25_nctdream

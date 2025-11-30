@@ -1,3 +1,0 @@
-2025/11/29 01:14:22 scraper.go:111: 🚀 Starting scraper with config: EventID=26_tws, TicketID=, Filter=
-2025/11/29 01:14:22 scraper.go:111: 🔍 Monitoring event page for available tickets...
-2025/11/29 01:14:22 scraper.go:111: 🔍 Monitoring event page: https://tixcraft.com/activity/game/26_tws

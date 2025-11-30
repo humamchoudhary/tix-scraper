@@ -1,9 +1,0 @@
-2025/11/29 01:49:04 scraper.go:112: 🚀 Starting scraper with config: EventID=26_tws, TicketID=, Filter=
-2025/11/29 01:49:04 scraper.go:112: 🔄 Loop mode: Running 4 iterations
-2025/11/29 01:49:04 scraper.go:112: === Iteration 1/4 ===
-2025/11/29 01:49:04 scraper.go:112: 🔍 Monitoring event page for available tickets...
-2025/11/29 01:49:04 scraper.go:112: 🔍 Monitoring event page: https://tixcraft.com/activity/game/26_tws
-2025/11/29 01:49:05 scraper.go:112: ⏹️ Scraper stopped by user.
-2025/11/29 01:49:05 scraper.go:112: 🔴 Closing browser instance
-2025/11/29 01:49:11 scraper.go:112: 🔍 Monitoring result: none
-2025/11/29 01:49:11 scraper.go:112: 🔁 No available tickets found (1/100), refreshing in 2 seconds...

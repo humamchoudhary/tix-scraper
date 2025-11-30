@@ -1,5 +1,0 @@
-2025/11/29 23:36:00 scraper.go:107: 🚀 Starting scraper with config: EventID=25_nctdream, TicketID=, Filter=
-2025/11/29 23:36:00 scraper.go:107: 🔄 Loop mode: Running 4 iterations
-2025/11/29 23:36:00 scraper.go:107: 🌐 Navigating to initial URL: https://tixcraft.com/activity/game/25_nctdream
-2025/11/29 23:36:13 scraper.go:107: ❌ Initial navigation failed: could not dial "ws://127.0.0.1:43299/devtools/browser/c2d4f421-acee-44f3-b19b-70f9f5809f67": context deadline exceeded
-2025/11/29 23:36:13 scraper.go:107: 🔴 Closing browser instance
