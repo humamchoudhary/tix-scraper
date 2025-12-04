@@ -67,6 +67,7 @@ var (
 	logFile    *os.File
 	logMutex   sync.Mutex
 )
+var fileMutex sync.Mutex
 
 // Initialize file logger
 func initFileLogger() error {
@@ -112,7 +113,7 @@ func LogToFile(format string, v ...interface{}) {
 func getBrowserContext(parentCtx context.Context) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("headless", false),
+		// chromedp.Flag("headless", false),
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
@@ -168,6 +169,7 @@ func setupPopupHandler(ctx context.Context) {
 }
 
 // Main runner function with URL-based routing
+// Main runner function with URL-based routing
 func runMainFlow(ctx context.Context, cfg *ScraperConfig, isFirstIteration bool) bool {
 	for {
 		select {
@@ -201,8 +203,10 @@ func runMainFlow(ctx context.Context, cfg *ScraperConfig, isFirstIteration bool)
 			if !success {
 				return false
 			}
-			// Booking flow completed successfully
-			return true
+			// After executeBookingFlow succeeds, wait for next URL
+			// It should redirect to ticket/ticket/ or ticket/order
+			time.Sleep(2 * time.Second)
+			continue
 
 		case strings.Contains(currentURL, "https://tixcraft.com/ticket/ticket/"):
 			LogToFile("🔄 Running ticket processing flow")
@@ -210,37 +214,39 @@ func runMainFlow(ctx context.Context, cfg *ScraperConfig, isFirstIteration bool)
 			if !success {
 				return false
 			}
-			// Continue to next URL check
+			// After processTicketPage succeeds, wait for redirect
+			time.Sleep(2 * time.Second)
+			continue
+
+		case strings.Contains(currentURL, "https://tixcraft.com/ticket/verify"):
+			LogToFile("🔑 Handling pre-sale code verification")
+			// ... pre-sale code handling ...
+			continue
 
 		case strings.Contains(currentURL, "https://tixcraft.com/ticket/order"):
 			LogToFile("🔍 On order page, waiting for redirect...")
-			// Just wait for redirect, handle any popups
+			// Just wait for redirect to checkout
 			err := chromedp.Run(ctx,
 				chromedp.Sleep(2*time.Second),
 			)
 			if err != nil {
 				LogToFile("❌ Error on order page: %v", err)
 			}
-			// Continue to next URL check
+			continue
 
 		case strings.Contains(currentURL, "https://tixcraft.com/ticket/checkout"):
-			LogToFile("💰 Running checkout extraction")
-			err = fastCheckoutExtract(ctx)
-			// if err == nil && booking != nil {
-			// 	booking.SessionID = cfg.SessionID
-			// 	booking.EventID = cfg.EventID
-			// 	go safeSaveBooking(*booking)
-			// }
-			// After checkout, we're typically done
+			LogToFile("💰 Reached checkout page - resetting browser state")
+
+			// Simply reset browser state and return success
+			resetBrowserState(ctx, *cfg)
+
+			// Return true to indicate this iteration completed successfully
 			return true
 
 		default:
 			LogToFile("❓ Unknown URL pattern, waiting...")
 			time.Sleep(2 * time.Second)
 		}
-
-		// Small delay before next URL check
-		time.Sleep(1 * time.Second)
 	}
 }
 
@@ -450,86 +456,160 @@ func processTicketPage(ctx context.Context, cfg *ScraperConfig) bool {
 }
 
 // Optimized checkout extraction with better error handling
-func fastCheckoutExtract(ctx context.Context) error {
+// func fastCheckoutExtract(ctx context.Context) error {
+//
+// 	// Wait for page to load and try multiple times if needed
+// 	// err := chromedp.Run(ctx,
+// 	// 	chromedp.WaitReady("body", chromedp.ByQuery),
+// 	// 	// chromedp.Sleep(1*time.Second),
+// 	// 	chromedp.WaitVisible("#reSelect", chromedp.ByID),
+// 	// 	chromedp.Click("#reSelect", chromedp.ByID),
+// 	// chromedp.Evaluate(`(function() {
+// 	// 	try {
+// 	// 		const getText = (sel) => {
+// 	// 			const el = document.querySelector(sel);
+// 	// 			return el ? el.innerText.trim() : "";
+// 	// 		};
+// 	//
+// 	// 		const getCell = (rowIdx, colIdx) => {
+// 	// 			const row = document.querySelectorAll('tr.orderTicket')[rowIdx];
+// 	// 			if(!row) return "";
+// 	// 			const cells = row.querySelectorAll('td');
+// 	// 			return cells[colIdx] ? cells[colIdx].innerText.trim() : "";
+// 	// 		};
+// 	//
+// 	// 		const data = {
+// 	// 			order_number: getText('.hex_Order_number'),
+// 	// 			event_name: getText('.ticketEventName'),
+// 	// 			event_date: getText('.ticketEventDate')?.replace(/\s+/g, ' ') || "",
+// 	// 			event_venue: getText('.ticketEventVenue')?.replace(/\s+/g, ' ') || "",
+// 	// 			ticket_qty: getText('.text-primary.bold'),
+// 	// 			service_fee: getText('#orderFee'),
+// 	// 			total: getText('#orderAmount'),
+// 	// 			section: getCell(0, 1),
+// 	// 			seat_info: getCell(0, 2),
+// 	// 			ticket_info: getCell(0, 3)
+// 	// 		};
+// 	//
+// 	// 		// Validate we have at least order number
+// 	// 		if (!data.order_number) {
+// 	// 			return "incomplete_data";
+// 	// 		}
+// 	//
+// 	// 		return JSON.stringify(data);
+// 	// 	} catch (error) {
+// 	// 		return "error: " + error.message;
+// 	// 	}
+// 	// })()`, &jsonStr),
+// 	// )
+//
+// 	// if jsonStr == "incomplete_data" {
+// 	// 	LogToFile("🔁 Checkout data not fully loaded, retrying... (%d/5)", i+1)
+// 	// 	time.Sleep(1 * time.Second)
+// 	// 	continue
+// 	// }
+//
+// 	// if strings.HasPrefix(jsonStr, "error:") {
+// 	// 	return nil, fmt.Errorf("javascript error in checkout extraction: %s", jsonStr)
+// 	// }
+//
+// 	// var b Booking
+// 	// if err := json.Unmarshal([]byte(jsonStr), &b); err != nil {
+// 	// 	return nil, fmt.Errorf("failed to unmarshal booking data: %w, raw JSON: %s", err, jsonStr)
+// 	// }
+// 	//
+// 	// if b.OrderNumber == "" {
+// 	// 	return nil, fmt.Errorf("incomplete booking data: missing order number")
+// 	// }
+//
+// 	// Try to click continue/reselect button
+// 	err := chromedp.Run(ctx,
+//
+// 		chromedp.WaitVisible("#reSelect", chromedp.ByID),
+// 		chromedp.Click("#reSelect", chromedp.ByID),
+// 		chromedp.Sleep(500*time.Millisecond),
+// 		chromedp.Click("#reSelect", chromedp.ByID), // Double click for reliability
+// 	)
+//
+// 	if err != nil {
+// 		return fmt.Errorf("failed to extract checkout data: %w", err)
+// 	}
+//
+// 	return nil
+// }
 
-	// Wait for page to load and try multiple times if needed
-	// err := chromedp.Run(ctx,
-	// 	chromedp.WaitReady("body", chromedp.ByQuery),
-	// 	// chromedp.Sleep(1*time.Second),
-	// 	chromedp.WaitVisible("#reSelect", chromedp.ByID),
-	// 	chromedp.Click("#reSelect", chromedp.ByID),
-	// chromedp.Evaluate(`(function() {
-	// 	try {
-	// 		const getText = (sel) => {
-	// 			const el = document.querySelector(sel);
-	// 			return el ? el.innerText.trim() : "";
-	// 		};
-	//
-	// 		const getCell = (rowIdx, colIdx) => {
-	// 			const row = document.querySelectorAll('tr.orderTicket')[rowIdx];
-	// 			if(!row) return "";
-	// 			const cells = row.querySelectorAll('td');
-	// 			return cells[colIdx] ? cells[colIdx].innerText.trim() : "";
-	// 		};
-	//
-	// 		const data = {
-	// 			order_number: getText('.hex_Order_number'),
-	// 			event_name: getText('.ticketEventName'),
-	// 			event_date: getText('.ticketEventDate')?.replace(/\s+/g, ' ') || "",
-	// 			event_venue: getText('.ticketEventVenue')?.replace(/\s+/g, ' ') || "",
-	// 			ticket_qty: getText('.text-primary.bold'),
-	// 			service_fee: getText('#orderFee'),
-	// 			total: getText('#orderAmount'),
-	// 			section: getCell(0, 1),
-	// 			seat_info: getCell(0, 2),
-	// 			ticket_info: getCell(0, 3)
-	// 		};
-	//
-	// 		// Validate we have at least order number
-	// 		if (!data.order_number) {
-	// 			return "incomplete_data";
-	// 		}
-	//
-	// 		return JSON.stringify(data);
-	// 	} catch (error) {
-	// 		return "error: " + error.message;
-	// 	}
-	// })()`, &jsonStr),
-	// )
+// Optimized checkout extraction with better error handling
+func fastCheckoutExtract(ctx context.Context, cfg ScraperConfig) error {
+	LogToFile("💰 Running checkout extraction")
 
-	// if jsonStr == "incomplete_data" {
-	// 	LogToFile("🔁 Checkout data not fully loaded, retrying... (%d/5)", i+1)
-	// 	time.Sleep(1 * time.Second)
-	// 	continue
-	// }
+	var reselectFound bool
 
-	// if strings.HasPrefix(jsonStr, "error:") {
-	// 	return nil, fmt.Errorf("javascript error in checkout extraction: %s", jsonStr)
-	// }
+	// Check if reselect button exists with a timeout
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	// var b Booking
-	// if err := json.Unmarshal([]byte(jsonStr), &b); err != nil {
-	// 	return nil, fmt.Errorf("failed to unmarshal booking data: %w, raw JSON: %s", err, jsonStr)
-	// }
-	//
-	// if b.OrderNumber == "" {
-	// 	return nil, fmt.Errorf("incomplete booking data: missing order number")
-	// }
-
-	// Try to click continue/reselect button
-	err := chromedp.Run(ctx,
-
-		chromedp.WaitVisible("#reSelect", chromedp.ByID),
-		chromedp.Click("#reSelect", chromedp.ByID),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.Click("#reSelect", chromedp.ByID), // Double click for reliability
+	err := chromedp.Run(checkCtx,
+		chromedp.WaitReady("body", chromedp.ByQuery),
+		chromedp.Evaluate(`
+            (function() {
+                const reselectBtn = document.getElementById('reSelect');
+                return reselectBtn !== null && reselectBtn.offsetParent !== null;
+            })()
+        `, &reselectFound),
 	)
 
-	if err != nil {
-		return fmt.Errorf("failed to extract checkout data: %w", err)
+	if err != nil || !reselectFound {
+		LogToFile("❌ Reselect button not found or page not loaded")
+
+		// Reset browser state
+		LogToFile("🔄 Resetting browser state...")
+		resetBrowserState(ctx, cfg)
+
+		return fmt.Errorf("reselect button not found")
 	}
 
-	return nil
+	// Try to click continue/reselect button with retries
+	maxRetries := 2
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		LogToFile("🖱️ Attempting to click reselect button (%d/%d)", attempt, maxRetries)
+
+		err := chromedp.Run(ctx,
+			chromedp.WaitVisible("#reSelect", chromedp.ByID),
+			chromedp.Click("#reSelect", chromedp.ByID),
+			chromedp.Sleep(500*time.Millisecond),
+		)
+
+		if err != nil {
+			LogToFile("❌ Failed to click reselect button: %v", err)
+
+			if attempt == maxRetries {
+				LogToFile("🔄 Maximum retries reached, resetting browser state...")
+				resetBrowserState(ctx, cfg)
+				return fmt.Errorf("failed to click reselect button after %d attempts", maxRetries)
+			}
+
+			continue
+		}
+
+		// Double click for reliability (second click)
+		err = chromedp.Run(ctx,
+			chromedp.Click("#reSelect", chromedp.ByID),
+			chromedp.Sleep(500*time.Millisecond),
+		)
+
+		if err != nil {
+			LogToFile("⚠️ Second click failed but first succeeded: %v", err)
+			// Continue anyway since first click might have worked
+		}
+
+		LogToFile("✅ Reselect button clicked successfully")
+		return nil
+	}
+
+	// Should not reach here, but just in case
+	LogToFile("🔄 Unexpected state, resetting browser...")
+	resetBrowserState(ctx, cfg)
+	return fmt.Errorf("unexpected state in checkout extraction")
 }
 
 // Safe file operations with retry mechanism
@@ -916,20 +996,19 @@ func executeBookingFlow(ctx context.Context, cfg ScraperConfig, isFirstIteration
 		}
 
 		if newURL != currentURL {
-			LogToFile("🎉 Reservation Successful!")
+			LogToFile("🎉 Reservation Successful! 919")
 
-			_ = chromedp.Run(ctx,
-				// chromedp.Reload(),
-				chromedp.Sleep(1*time.Second),
-			)
+			// _ = chromedp.Run(ctx,
+			// 	// chromedp.Reload(),
+			// 	chromedp.Sleep(1*time.Second),
+			// )
 			// Fast checkout extraction
-			err := fastCheckoutExtract(ctx)
-
-			if err != nil {
-				LogToFile("❌ Checkout error: %v", err)
-				// fastReloadPage(ctx)
-				continue
-			}
+			// err := fastCheckoutExtract(ctx, cfg)
+			// if err != nil {
+			// 	LogToFile("❌ Checkout error: %v", err)
+			// 	// fastReloadPage(ctx)
+			// 	continue
+			// }
 			// if err == nil && booking != nil {
 			// 	booking.SessionID = cfg.SessionID
 			// 	booking.Seat = seatVal
@@ -1064,8 +1143,6 @@ func fastProcessCaptcha(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("no text found in OCR response")
 }
 
-var fileMutex sync.Mutex
-
 func saveBooking(booking Booking) {
 	fileMutex.Lock()
 	defer fileMutex.Unlock()
@@ -1109,11 +1186,15 @@ func saveBooking(booking Booking) {
 func handlePreSaleCode(ctx context.Context, preSaleCode string) error {
 	LogToFile("🔍 Checking for pre-sale code form...")
 
+	// Wait a bit for page to load
+	time.Sleep(1 * time.Second)
+
 	var hasForm bool
 	err := chromedp.Run(ctx,
 		chromedp.Evaluate(`
             (function() {
-                return document.getElementById('form-ticket-verify') !== null;
+                const form = document.getElementById('form-ticket-verify');
+                return form !== null && form.offsetParent !== null;
             })()
         `, &hasForm),
 	)
@@ -1137,7 +1218,7 @@ func handlePreSaleCode(ctx context.Context, preSaleCode string) error {
 		chromedp.WaitVisible("#form-ticket-verify", chromedp.ByID),
 		chromedp.SetValue("input[name='checkCode']", preSaleCode, chromedp.ByQuery),
 		chromedp.Click("#form-ticket-verify button[type='submit']", chromedp.ByQuery),
-		// chromedp.Sleep(2*time.Second), // Wait for form submission
+		chromedp.Sleep(1*time.Second), // Wait for form submission
 	)
 	if err != nil {
 		return fmt.Errorf("failed to submit pre-sale code: %w", err)

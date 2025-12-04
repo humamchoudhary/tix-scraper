@@ -1,21 +1,40 @@
 [
   {
     "id": "bot_1764352788",
-    "name": "Bot #2",
+    "name": "Bot #1",
     "user": {
-      "sid": "bt5t2jdguokp6ir1dbc7tckqof",
-      "username": "[Google] Jin Go Sup"
+      "sid": "mcjik3fl73ucddh0se4tvd0l5a",
+      "username": "[Google] Ton Len Luk"
     },
-    "sid": "bt5t2jdguokp6ir1dbc7tckqof",
-    "event_id": "25_nctdream",
+    "sid": "mcjik3fl73ucddh0se4tvd0l5a",
+    "event_id": "26_twice",
     "ticket_id": "",
     "filter": "",
     "quantity": "1",
-    "max_tickets": "4",
+    "max_tickets": "2",
     "pre_sale_code": "",
     "loop": true,
     "schedule": true,
-    "start_date": "2025-11-29",
-    "start_time": "01:05"
+    "start_date": "2025-12-04",
+    "start_time": "08:00"
+  },
+  {
+    "id": "bot_1764790438",
+    "name": "Bot #2",
+    "user": {
+      "sid": "642ndn37gll7sr6j7st1iepv0n",
+      "username": "[Google] Jin Go Sup"
+    },
+    "sid": "642ndn37gll7sr6j7st1iepv0n",
+    "event_id": "26_twice",
+    "ticket_id": "",
+    "filter": "",
+    "quantity": "1",
+    "max_tickets": "2",
+    "pre_sale_code": "",
+    "loop": true,
+    "schedule": true,
+    "start_date": "2025-12-04",
+    "start_time": "08:00"
   }
 ]
