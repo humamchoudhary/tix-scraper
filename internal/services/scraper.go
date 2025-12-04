@@ -113,7 +113,7 @@ func LogToFile(format string, v ...interface{}) {
 func getBrowserContext(parentCtx context.Context) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		// chromedp.Flag("headless", false),
+		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
