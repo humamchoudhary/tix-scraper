@@ -63,11 +63,16 @@ type Booking struct {
 
 // Global logger for file logging
 var (
-	fileLogger *log.Logger
-	logFile    *os.File
-	logMutex   sync.Mutex
+	fileLogger   *log.Logger
+	logFile      *os.File
+	logMutex     sync.Mutex
+	guiLogWriter io.Writer
 )
 var fileMutex sync.Mutex
+
+func SetGUIWriter(writer io.Writer) {
+	guiLogWriter = writer
+}
 
 // Initialize file logger
 func initFileLogger() error {
@@ -98,14 +103,27 @@ func initFileLogger() error {
 }
 
 func LogToFile(format string, v ...interface{}) {
+	message := fmt.Sprintf(format, v...)
+
+	// Write to file/terminal
 	if fileLogger == nil {
 		if err := initFileLogger(); err != nil {
 			log.Printf("Failed to initialize file logger: %v", err)
-			log.Printf(format, v...)
-			return
+			log.Printf("%s", message)
+		} else {
+			fileLogger.Printf("%s", message)
 		}
+	} else {
+		fileLogger.Printf("%s", message)
 	}
-	fileLogger.Printf(format, v...)
+
+	// Write to GUI if available
+	if guiLogWriter != nil {
+		// Add timestamp for GUI logs
+		timestamp := time.Now().Format("15:04:05")
+		guiMessage := fmt.Sprintf("%s %s\n", timestamp, message)
+		guiLogWriter.Write([]byte(guiMessage))
+	}
 }
 
 // Global browser context for reuse
@@ -114,7 +132,7 @@ func getBrowserContext(parentCtx context.Context) (context.Context, context.Canc
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 
 		// CRITICAL: Must be true for CLI/server environment
-		chromedp.Flag("headless", true), // Changed from false - required for CLI
+		// chromedp.Flag("headless", false), // Changed from false - required for CLI
 
 		// Anti-detection
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
@@ -810,62 +828,24 @@ func timeToCDPTime(t time.Time) *cdp.TimeSinceEpoch {
 }
 func executeBookingFlow(ctx context.Context, cfg ScraperConfig, isFirstIteration bool) bool {
 	// Build URL based on available data
-	url := cfg.BaseURL
-	if cfg.EventID != "" {
-		url += "/" + cfg.EventID
-		if cfg.TicketID != "" {
-			url += "/" + cfg.TicketID
-		}
-	}
 
-	var username string
-
-	// Auto-accept cookies by setting the exact OptanonConsent cookie
-	optanonConsentValue := "isGpcEnabled=0&datestamp=" + strings.ReplaceAll(time.Now().Format("Mon+Jan+02+2006+15:04:05+GMT-0700"), ":", "%3A") +
-		"&version=202506.1.0&browserGpcFlag=0&isIABGlobal=false&hosts=&consentId=" + generateUUID() +
-		"&interactionCount=1&isAnonUser=0&landingPath=NotLandingPage&groups=C0001%3A1%2CC0003%3A1%2CC0002%3A1%2CC0004%3A1&AwaitingReconsent=false"
+	// var username string
 
 	// Only navigate if we're not already on the correct page
-	if cfg.TicketID != "" {
-		LogToFile("🌐 Navigating to: %s", url)
-
-		// Set both SID and TIXUISID cookies for compatibility
-		err := chromedp.Run(ctx,
-			network.SetCookie("SID", cfg.SessionID).WithDomain("tixcraft.com").WithPath("/"),
-			network.SetCookie("TIXUISID", cfg.SessionID).WithDomain("tixcraft.com").WithPath("/"),
-			// Set consent cookies
-			network.SetCookie("OptanonConsent", optanonConsentValue).
-				WithDomain(".tixcraft.com").
-				WithPath("/").
-				WithExpires(timeToCDPTime(time.Now().Add(365*24*time.Hour))),
-			network.SetCookie("OptanonAlertBoxClosed", time.Now().Format("2006-01-02T15:04:05.000Z")).
-				WithDomain(".tixcraft.com").
-				WithPath("/").
-				WithExpires(timeToCDPTime(time.Now().Add(365*24*time.Hour))),
-			chromedp.Navigate(url),
-			chromedp.WaitReady("body", chromedp.ByQuery),
-		)
-		// dismissCookieBanner(ctx)
-
-		if err != nil {
-			LogToFile("❌ Navigation error: %v", err)
-			return false
-		}
-	}
 
 	// Quick login check with timeout
-	loginCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	err := chromedp.Run(loginCtx,
-		chromedp.WaitReady("body"),
-		chromedp.Text(".user-name", &username, chromedp.ByQuery),
-	)
-	if err != nil || strings.TrimSpace(username) == "" {
-		LogToFile("❌ Login failed or User not found. Update SID/TIXUISID.")
-		return false
-	}
-	LogToFile("✅ Logged in as: %s", username)
+	// loginCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// defer cancel()
+	//
+	// err := chromedp.Run(loginCtx,
+	// 	chromedp.WaitReady("body"),
+	// 	chromedp.Text(".user-name", &username, chromedp.ByQuery),
+	// )
+	// if err != nil || strings.TrimSpace(username) == "" {
+	// 	LogToFile("❌ Login failed or User not found. Update SID/TIXUISID.")
+	// 	return false
+	// }
+	// LogToFile("✅ Logged in as: %s", username)
 
 	LogToFile("🔍 Checking for pre-sale code requirement...")
 	if err := handlePreSaleCode(ctx, cfg.PreSaleCode); err != nil {
@@ -880,6 +860,7 @@ func executeBookingFlow(ctx context.Context, cfg ScraperConfig, isFirstIteration
 	}
 
 	actions = append(actions,
+		chromedp.WaitVisible("#selectseat", chromedp.ByID),
 		chromedp.EvaluateAsDevTools(fmt.Sprintf(`
         (function(){
             try {
@@ -926,7 +907,7 @@ func executeBookingFlow(ctx context.Context, cfg ScraperConfig, isFirstIteration
         })()
     `, cfg.Filter), &seatVal),
 	)
-	err = chromedp.Run(ctx, actions...)
+	err := chromedp.Run(ctx, actions...)
 	if err != nil {
 		LogToFile("❌ Error selecting seat: %v", err)
 		return false
@@ -1317,6 +1298,8 @@ func GetUserName(session_id string) (string, error) {
 	if strings.TrimSpace(username) == "" {
 		return "", fmt.Errorf("could not get username - invalid session ID")
 	}
+
+	fmt.Println(username)
 
 	return username, nil
 }

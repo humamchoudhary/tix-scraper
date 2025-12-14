@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -63,47 +64,26 @@ type BotConfig struct {
 	IsRunning   bool   `json:"-"`
 }
 
-type Booking struct {
-	SessionID    string `json:"session_id"`
-	Seat         string `json:"seat"`
-	EventID      string `json:"event_id"`
-	TicketID     string `json:"ticket_id"`
-	NumOfTickets string `json:"num_of_tickets"`
-	OrderNumber  string `json:"order_number"`
-	EventName    string `json:"event_name"`
-	EventDate    string `json:"event_date"`
-	EventVenue   string `json:"event_venue"`
-	Section      string `json:"section"`
-	SeatInfo     string `json:"seat_info"`
-	TicketInfo   string `json:"ticket_info"`
-	TicketQty    string `json:"ticket_qty"`
-	ServiceFee   string `json:"service_fee"`
-	Total        string `json:"total"`
-	UserName     string `json:"username"`
-}
-
 type User struct {
 	SID      string `json:"sid"`
 	Username string `json:"username"`
 }
 
 type GUI struct {
-	th                   *material.Theme
-	w                    *app.Window
-	bots                 []*Bot
-	selectedBot          int
-	addBotBtn            widget.Clickable
-	logView              *LogView
-	bookingsView         *BookingsView
-	usersView            *UsersView
-	showBookings         bool
-	showUsers            bool
-	bookingsTabBtn       widget.Clickable
-	botsTabBtn           widget.Clickable
-	usersTabBtn          widget.Clickable
-	mu                   sync.Mutex
-	OcrSpaceAPIKeyEditor widget.Editor
-	isMobile             bool // Track if we're on a small screen
+	th             *material.Theme
+	w              *app.Window
+	bots           []*Bot
+	selectedBot    int
+	addBotBtn      widget.Clickable
+	saveAllBtn     widget.Clickable // Added save all button
+	logView        *LogView
+	usersView      *UsersView
+	showUsers      bool
+	botsTabBtn     widget.Clickable
+	usersTabBtn    widget.Clickable
+	mu             sync.Mutex
+	isMobile       bool // Track if we're on a small screen
+	mainScrollList widget.List
 }
 
 type Bot struct {
@@ -153,16 +133,6 @@ func (tf *TextField) Changed() bool {
 
 func (tf *TextField) Update() {
 	tf.lastValue = tf.Value()
-}
-
-type BookingsView struct {
-	gui           *GUI
-	list          widget.List
-	bookings      []Booking
-	deleteButtons []widget.Clickable
-	deleteAllBtn  widget.Clickable
-	refreshBtn    widget.Clickable
-	mu            sync.Mutex
 }
 
 type UsersView struct {
@@ -253,18 +223,18 @@ func NewGUI() *GUI {
 	th.Palette.Fg = textColor
 
 	g := &GUI{
-		th:           th,
-		selectedBot:  -1,
-		logView:      &LogView{},
-		bookingsView: &BookingsView{},
-		usersView:    &UsersView{},
-		showBookings: false,
+		th:          th,
+		selectedBot: -1,
+		logView:     &LogView{},
+		usersView:   &UsersView{},
+		showUsers:   false,
+		mainScrollList: widget.List{
+			List: layout.List{Axis: layout.Vertical},
+		},
 	}
 
-	g.bookingsView.gui = g
 	g.usersView.gui = g
 	g.loadBots()
-	g.bookingsView.loadBookings()
 	g.usersView.loadUsers()
 
 	if len(g.bots) == 0 {
@@ -290,9 +260,14 @@ func (g *GUI) addBot() {
 	bot.filterEditor = TextField{Editor: widget.Editor{SingleLine: true}}
 	bot.quantityEditor = TextField{Editor: widget.Editor{SingleLine: true}}
 	bot.maxTicketsEditor = TextField{Editor: widget.Editor{SingleLine: true}}
+	bot.preSaleEditor = TextField{Editor: widget.Editor{SingleLine: true}}
+	bot.dateEditor = TextField{Editor: widget.Editor{SingleLine: true}}
+	bot.hourEditor = TextField{Editor: widget.Editor{SingleLine: true}}
+	bot.minuteEditor = TextField{Editor: widget.Editor{SingleLine: true}}
 
 	bot.nameEditor.SetValue(bot.config.Name)
 	bot.loopCheckbox.Value = bot.config.Loop
+	bot.scheduleCheckbox.Value = bot.config.Schedule
 
 	g.bots = append(g.bots, bot)
 	g.selectedBot = len(g.bots) - 1
@@ -303,7 +278,7 @@ func (g *GUI) Run() {
 
 	// Set responsive window size
 	g.w.Option(
-		app.Title("Tix Scraper - Multi Bot & Bookings"),
+		app.Title("Tix Scraper - Multi Bot & Accounts"),
 		app.Size(unit.Dp(1000), unit.Dp(700)),   // Smaller default size
 		app.MinSize(unit.Dp(400), unit.Dp(500)), // Minimum size for mobile
 	)
@@ -404,15 +379,6 @@ func (g *GUI) layoutSidebar(gtx C) D {
 			}),
 			// Content based on selected tab
 			layout.Flexed(1, func(gtx C) D {
-				if g.showBookings {
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						layout.Rigid(func(gtx C) D {
-							label := material.Caption(g.th, fmt.Sprintf("%d Bookings", len(g.bookingsView.bookings)))
-							label.Color = disabledColor
-							return layout.Inset{Top: unit.Dp(16), Bottom: unit.Dp(8)}.Layout(gtx, label.Layout)
-						}),
-					)
-				}
 				if g.showUsers {
 					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 						layout.Rigid(func(gtx C) D {
@@ -424,24 +390,42 @@ func (g *GUI) layoutSidebar(gtx C) D {
 				}
 				return g.layoutBotList(gtx)
 			}),
-			// Action Button
+			// Action Buttons
 			layout.Rigid(func(gtx C) D {
-				if g.showBookings || g.showUsers {
+				if g.showUsers {
 					return D{}
 				}
 
-				if g.addBotBtn.Clicked(gtx) {
-					g.addBot()
-					g.saveBots()
-					g.w.Invalidate()
-				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						if g.saveAllBtn.Clicked(gtx) {
+							g.saveBots()
+							g.logView.Write([]byte("💾 All bots saved successfully\n"))
+							g.w.Invalidate()
+						}
 
-				btn := material.Button(g.th, &g.addBotBtn, "✚ Add Bot")
-				btn.Background = accentColor
-				btn.Color = bgColor
-				btn.CornerRadius = unit.Dp(8)
-				btn.TextSize = unit.Sp(14)
-				return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, btn.Layout)
+						btn := material.Button(g.th, &g.saveAllBtn, "💾 Save All Bots")
+						btn.Background = successColor
+						btn.Color = bgColor
+						btn.CornerRadius = unit.Dp(8)
+						btn.TextSize = unit.Sp(14)
+						return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, btn.Layout)
+					}),
+					layout.Rigid(func(gtx C) D {
+						if g.addBotBtn.Clicked(gtx) {
+							g.addBot()
+							g.logView.Write([]byte("🤖 New bot added\n"))
+							g.w.Invalidate()
+						}
+
+						btn := material.Button(g.th, &g.addBotBtn, "✚ Add Bot")
+						btn.Background = accentColor
+						btn.Color = bgColor
+						btn.CornerRadius = unit.Dp(8)
+						btn.TextSize = unit.Sp(14)
+						return btn.Layout(gtx)
+					}),
+				)
 			}),
 		)
 	})
@@ -449,21 +433,12 @@ func (g *GUI) layoutSidebar(gtx C) D {
 
 func (g *GUI) layoutTabButtons(gtx C) D {
 	if g.botsTabBtn.Clicked(gtx) {
-		g.showBookings = false
 		g.showUsers = false
-		g.w.Invalidate()
-	}
-
-	if g.bookingsTabBtn.Clicked(gtx) {
-		g.showBookings = true
-		g.showUsers = false
-		g.bookingsView.loadBookings()
 		g.w.Invalidate()
 	}
 
 	if g.usersTabBtn.Clicked(gtx) {
 		g.showUsers = true
-		g.showBookings = false
 		g.usersView.loadUsers()
 		g.w.Invalidate()
 	}
@@ -485,11 +460,11 @@ func (g *GUI) layoutTabButtons(gtx C) D {
 			gtx.Constraints.Min.Y = minHeight
 
 			if g.isMobile {
-				gtx.Constraints.Min.X = gtx.Dp(70)
-				gtx.Constraints.Max.X = gtx.Dp(70)
-			} else {
 				gtx.Constraints.Min.X = gtx.Dp(80)
 				gtx.Constraints.Max.X = gtx.Dp(80)
+			} else {
+				gtx.Constraints.Min.X = gtx.Dp(100)
+				gtx.Constraints.Max.X = gtx.Dp(100)
 			}
 
 			rect := image.Rectangle{Max: gtx.Constraints.Max}
@@ -508,9 +483,7 @@ func (g *GUI) layoutTabButtons(gtx C) D {
 	}
 
 	return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
-		layout.Flexed(1, func(gtx C) D { return layoutTab(&g.botsTabBtn, "Bots", !g.showBookings && !g.showUsers) }),
-		layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-		layout.Flexed(1, func(gtx C) D { return layoutTab(&g.bookingsTabBtn, "Bookings", g.showBookings) }),
+		layout.Flexed(1, func(gtx C) D { return layoutTab(&g.botsTabBtn, "Bots", !g.showUsers) }),
 		layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
 		layout.Flexed(1, func(gtx C) D { return layoutTab(&g.usersTabBtn, "Accounts", g.showUsers) }),
 	)
@@ -521,23 +494,51 @@ func (g *GUI) layoutBotList(gtx C) D {
 		List: layout.List{Axis: layout.Vertical},
 	}
 
+	// Check for delete button clicks FIRST, before rendering
+	var deletedIndex = -1
+	for i := 0; i < len(g.bots); i++ {
+		if g.bots[i].deleteBtn.Clicked(gtx) && len(g.bots) > 1 {
+			deletedIndex = i
+			break
+		}
+	}
+
+	// Process deletion if needed
+	if deletedIndex >= 0 {
+		botName := g.bots[deletedIndex].config.Name
+
+		// Cancel bot if running
+		if g.bots[deletedIndex].cancel != nil {
+			g.bots[deletedIndex].cancel()
+		}
+
+		// Remove bot
+		g.bots = append(g.bots[:deletedIndex], g.bots[deletedIndex+1:]...)
+
+		// Adjust selected bot index
+		if g.selectedBot >= len(g.bots) {
+			g.selectedBot = len(g.bots) - 1
+		} else if g.selectedBot > deletedIndex {
+			g.selectedBot--
+		}
+
+		g.saveBots()
+		g.logView.Write([]byte(fmt.Sprintf("🗑️ Bot '%s' deleted\n", botName)))
+		g.w.Invalidate()
+		return D{}
+	}
+
+	// Check for select button clicks
+	for i := 0; i < len(g.bots); i++ {
+		if g.bots[i].selectBtn.Clicked(gtx) {
+			g.selectedBot = i
+			g.w.Invalidate()
+		}
+	}
+
 	return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
 		return material.List(g.th, list).Layout(gtx, len(g.bots), func(gtx C, i int) D {
 			bot := g.bots[i]
-
-			if bot.selectBtn.Clicked(gtx) {
-				g.selectedBot = i
-				g.w.Invalidate()
-			}
-
-			if bot.deleteBtn.Clicked(gtx) && len(g.bots) > 1 {
-				g.bots = append(g.bots[:i], g.bots[i+1:]...)
-				if g.selectedBot >= len(g.bots) {
-					g.selectedBot = len(g.bots) - 1
-				}
-				g.saveBots()
-				g.w.Invalidate()
-			}
 
 			return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx C) D {
 				return g.layoutBotCard(gtx, bot, i)
@@ -643,9 +644,6 @@ func (g *GUI) layoutBotCard(gtx C, bot *Bot, index int) D {
 }
 
 func (g *GUI) layoutMain(gtx C) D {
-	if g.showBookings {
-		return g.bookingsView.Layout(gtx)
-	}
 	if g.showUsers {
 		return g.usersView.Layout(gtx)
 	}
@@ -656,21 +654,30 @@ func (g *GUI) layoutMain(gtx C) D {
 
 	bot := g.bots[g.selectedBot]
 
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(func(gtx C) D {
-			return g.layoutHeader(gtx, bot)
-		}),
-		layout.Flexed(1, func(gtx C) D {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					return g.layoutBotConfig(gtx, bot)
-				}),
-				layout.Flexed(1, func(gtx C) D {
-					return g.layoutLogs(gtx)
-				}),
-			)
-		}),
-	)
+	return material.List(g.th, &g.mainScrollList).Layout(gtx, 1, func(gtx C, i int) D {
+		// Set a minimum height for the inner content
+		gtx.Constraints.Max.Y = gtx.Dp(1100) // Content will be at least 800dp tall
+
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx C) D {
+				return g.layoutHeader(gtx, bot)
+			}),
+			layout.Flexed(1, func(gtx C) D {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx C) D {
+						// Bot config section with minimum height
+						gtx.Constraints.Min.Y = gtx.Dp(400)
+						return g.layoutBotConfig(gtx, bot)
+					}),
+					layout.Flexed(1, func(gtx C) D {
+						// Logs section with minimum height
+						gtx.Constraints.Min.Y = gtx.Dp(300)
+						return g.layoutLogs(gtx)
+					}),
+				)
+			}),
+		)
+	})
 }
 
 func (g *GUI) layoutHeader(gtx C, bot *Bot) D {
@@ -694,6 +701,7 @@ func (g *GUI) layoutHeader(gtx C, bot *Bot) D {
 					if bot.config.IsRunning {
 						bot.cancel()
 						bot.config.IsRunning = false
+						g.logView.Write([]byte(fmt.Sprintf("⏹️ Bot '%s' stopped\n", bot.nameEditor.Value())))
 						g.w.Invalidate()
 					} else {
 						g.startBot(bot)
@@ -976,19 +984,25 @@ func (g *GUI) startBot(bot *Bot) {
 		defer func() {
 			bot.config.IsRunning = false
 			g.w.Invalidate()
-			LogToFile("🛑 Bot stopped")
+			g.logView.Write([]byte("🛑 Bot stopped\n"))
 		}()
 
 		// Validate inputs
 		if bot.config.SID == "" {
-			LogToFile("❌ No user selected")
+			g.logView.Write([]byte("❌ No user selected\n"))
 			return
 		}
 
+		// Connect GUI log writer to services package
+		services.SetGUIWriter(&BotLogWriter{
+			gui:     g,
+			botName: bot.config.Name,
+		})
+
 		// Handle scheduling
 		if bot.config.Schedule {
-			if err := waitForScheduledTime(ctx, bot.config.StartDate, bot.config.StartTime, bot.config.Name); err != nil {
-				LogToFile("❌ Schedule error: %v", err)
+			if err := waitForScheduledTime(ctx, bot.config.StartDate, bot.config.StartTime, bot.config.Name, g); err != nil {
+				g.logView.Write([]byte(fmt.Sprintf("❌ Schedule error: %v\n", err)))
 				return
 			}
 		}
@@ -996,14 +1010,17 @@ func (g *GUI) startBot(bot *Bot) {
 		// Check if context was cancelled during waiting
 		select {
 		case <-ctx.Done():
-			LogToFile("🛑 Bot cancelled before starting")
+			g.logView.Write([]byte("🛑 Bot cancelled before starting\n"))
 			return
 		default:
 		}
 
 		// Start the actual scraper
 		logWriter := &BotLogWriter{gui: g, botName: bot.config.Name}
-		log.SetOutput(logWriter)
+
+		// Set up multi-writer for both GUI and stdout
+		multiWriter := io.MultiWriter(logWriter, os.Stderr)
+		log.SetOutput(multiWriter)
 		defer log.SetOutput(os.Stderr)
 
 		cfg := services.ScraperConfig{
@@ -1018,14 +1035,14 @@ func (g *GUI) startBot(bot *Bot) {
 			Loop:           bot.config.Loop,
 		}
 
-		LogToFile("🚀 Starting bot: %s", bot.config.Name)
+		g.logView.Write([]byte(fmt.Sprintf("🚀 Starting bot: %s\n", bot.config.Name)))
 		services.RunScraper(ctx, cfg)
 	}()
 }
 
-// waitForScheduledTime waits until the scheduled start time
 // waitForScheduledTime waits until the scheduled datetime
-func waitForScheduledTime(ctx context.Context, startDate, startTime, botName string) error {
+// waitForScheduledTime waits until the scheduled datetime
+func waitForScheduledTime(ctx context.Context, startDate, startTime, botName string, gui *GUI) error {
 	// Parse the scheduled datetime in local time
 	scheduled, err := time.ParseInLocation("2006-01-02 15:04", fmt.Sprintf("%s %s", startDate, startTime), time.Local)
 	if err != nil {
@@ -1036,13 +1053,13 @@ func waitForScheduledTime(ctx context.Context, startDate, startTime, botName str
 
 	// If scheduled time is in the past, start immediately
 	if scheduled.Before(now) {
-		LogToFile("⏰ Scheduled time %s has passed, starting immediately", scheduled.Format("2006-01-02 15:04"))
+		gui.logView.Write([]byte(fmt.Sprintf("⏰ Scheduled time %s has passed, starting immediately\n", scheduled.Format("2006-01-02 15:04"))))
 		return nil
 	}
 
 	// Calculate wait duration
 	waitDuration := scheduled.Sub(now)
-	LogToFile("⏰ Bot '%s' scheduled for %s (Local Time), waiting %v", botName, scheduled.Format("2006-01-02 15:04:05"), waitDuration)
+	gui.logView.Write([]byte(fmt.Sprintf("⏰ Bot '%s' scheduled for %s (Local Time), waiting %v\n", botName, scheduled.Format("2006-01-02 15:04:05"), waitDuration)))
 
 	// Create a timer that respects context cancellation
 	timer := time.NewTimer(waitDuration)
@@ -1050,10 +1067,10 @@ func waitForScheduledTime(ctx context.Context, startDate, startTime, botName str
 
 	select {
 	case <-timer.C:
-		LogToFile("✅ Scheduled time reached, starting bot '%s'", botName)
+		gui.logView.Write([]byte(fmt.Sprintf("✅ Scheduled time reached, starting bot '%s'\n", botName)))
 		return nil
 	case <-ctx.Done():
-		LogToFile("🛑 Schedule cancelled for bot '%s'", botName)
+		gui.logView.Write([]byte(fmt.Sprintf("🛑 Schedule cancelled for bot '%s'\n", botName)))
 		return fmt.Errorf("schedule cancelled")
 	}
 }
@@ -1080,18 +1097,32 @@ func (g *GUI) saveBots() {
 		}
 	}
 
-	data, _ := json.MarshalIndent(configs, "", "  ")
-	os.WriteFile("bots_config.json", data, 0644)
+	data, err := json.MarshalIndent(configs, "", "  ")
+	if err != nil {
+		g.logView.Write([]byte(fmt.Sprintf("❌ Error marshalling bots: %v\n", err)))
+		return
+	}
+
+	if err := os.WriteFile("data/bots_config.json", data, 0644); err != nil {
+		g.logView.Write([]byte(fmt.Sprintf("❌ Error saving bots: %v\n", err)))
+		return
+	}
+
+	g.logView.Write([]byte("💾 Bots saved successfully\n"))
 }
 
 func (g *GUI) loadBots() {
-	data, err := os.ReadFile("bots_config.json")
+	data, err := os.ReadFile("data/bots_config.json")
 	if err != nil {
+		if !os.IsNotExist(err) {
+			g.logView.Write([]byte(fmt.Sprintf("❌ Error loading bots: %v\n", err)))
+		}
 		return
 	}
 
 	var configs []BotConfig
 	if err := json.Unmarshal(data, &configs); err != nil {
+		g.logView.Write([]byte(fmt.Sprintf("❌ Error parsing bots config: %v\n", err)))
 		return
 	}
 
@@ -1137,442 +1168,335 @@ func (g *GUI) loadBots() {
 	}
 }
 
-// Add these methods to your GUI file
-
-// BookingsView methods
-func (bv *BookingsView) loadBookings() {
-	bv.mu.Lock()
-	defer bv.mu.Unlock()
-
-	data, err := os.ReadFile("bookings.json")
-	if err != nil {
-		bv.bookings = []Booking{}
-		return
-	}
-
-	var bookings []Booking
-	if err := json.Unmarshal(data, &bookings); err != nil {
-		bv.bookings = []Booking{}
-		return
-	}
-
-	bv.bookings = bookings
-	bv.deleteButtons = make([]widget.Clickable, len(bookings))
-}
-
-func (bv *BookingsView) saveBookings() {
-	bv.mu.Lock()
-	defer bv.mu.Unlock()
-
-	data, err := json.MarshalIndent(bv.bookings, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling bookings: %v", err)
-		return
-	}
-
-	if err := os.WriteFile("bookings.json", data, 0644); err != nil {
-		log.Printf("Error writing bookings: %v", err)
-	}
-}
-
-func (bv *BookingsView) Layout(gtx C) D {
-	bv.mu.Lock()
-	defer bv.mu.Unlock()
-
-	if bv.refreshBtn.Clicked(gtx) {
-		bv.loadBookings()
-		bv.gui.w.Invalidate()
-	}
-
-	if bv.deleteAllBtn.Clicked(gtx) {
-		bv.bookings = []Booking{}
-		bv.saveBookings()
-		bv.gui.w.Invalidate()
-	}
-
-	// Handle individual delete buttons
-	for i := range bv.deleteButtons {
-		if bv.deleteButtons[i].Clicked(gtx) {
-			bv.bookings = append(bv.bookings[:i], bv.bookings[i+1:]...)
-			bv.deleteButtons = append(bv.deleteButtons[:i], bv.deleteButtons[i+1:]...)
-			bv.saveBookings()
-			bv.gui.w.Invalidate()
-			break
-		}
-	}
-
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		// Header
-		layout.Rigid(func(gtx C) D {
-			padding := unit.Dp(20)
-			if bv.gui.isMobile {
-				padding = unit.Dp(16)
-			}
-			return layout.UniformInset(padding).Layout(gtx, func(gtx C) D {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, func(gtx C) D {
-						label := material.H5(bv.gui.th, fmt.Sprintf("🎫 Bookings (%d)", len(bv.bookings)))
-						label.Color = accentColor
-						if bv.gui.isMobile {
-							label.TextSize = unit.Sp(18)
-						}
-						return label.Layout(gtx)
-					}),
-					layout.Rigid(func(gtx C) D {
-						btn := material.Button(bv.gui.th, &bv.refreshBtn, "🔄 Refresh")
-						btn.Background = accentColor
-						btn.Color = bgColor
-						btn.CornerRadius = unit.Dp(8)
-						if bv.gui.isMobile {
-							btn.TextSize = unit.Sp(13)
-						}
-						return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
-					}),
-					layout.Rigid(func(gtx C) D {
-						if len(bv.bookings) == 0 {
-							return D{}
-						}
-						btn := material.Button(bv.gui.th, &bv.deleteAllBtn, "🗑️ Delete All")
-						btn.Background = dangerColor
-						btn.Color = bgColor
-						btn.CornerRadius = unit.Dp(8)
-						if bv.gui.isMobile {
-							btn.TextSize = unit.Sp(13)
-						}
-						return btn.Layout(gtx)
-					}),
-				)
-			})
-		}),
-		// Bookings List
-		layout.Flexed(1, func(gtx C) D {
-			horizontalPadding := unit.Dp(20)
-			if bv.gui.isMobile {
-				horizontalPadding = unit.Dp(16)
-			}
-			return layout.Inset{Left: horizontalPadding, Right: horizontalPadding, Bottom: unit.Dp(20)}.Layout(gtx, func(gtx C) D {
-				if len(bv.bookings) == 0 {
-					return bv.layoutEmptyState(gtx)
-				}
-
-				bv.list.Axis = layout.Vertical
-				return material.List(bv.gui.th, &bv.list).Layout(gtx, len(bv.bookings), func(gtx C, i int) D {
-					return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
-						return bv.layoutBookingCard(gtx, i)
-					})
-				})
-			})
-		}),
-	)
-}
-
-func (bv *BookingsView) layoutEmptyState(gtx C) D {
-	return widget.Border{
-		Color:        borderColor,
-		Width:        unit.Dp(1),
-		CornerRadius: unit.Dp(10),
-	}.Layout(gtx, func(gtx C) D {
-		defer clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Max}, gtx.Dp(10)).Push(gtx.Ops).Pop()
-		paint.Fill(gtx.Ops, cardBg)
-
-		return layout.Center.Layout(gtx, func(gtx C) D {
-			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx C) D {
-					label := material.H6(bv.gui.th, "📭")
-					label.TextSize = unit.Sp(48)
-					return label.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx C) D {
-					label := material.Body1(bv.gui.th, "No bookings yet")
-					label.Color = disabledColor
-					return layout.Inset{Top: unit.Dp(12)}.Layout(gtx, label.Layout)
-				}),
-			)
-		})
-	})
-}
-
-func (bv *BookingsView) layoutBookingCard(gtx C, index int) D {
-	booking := bv.bookings[index]
-
-	return widget.Border{
-		Color:        borderColor,
-		Width:        unit.Dp(1),
-		CornerRadius: unit.Dp(10),
-	}.Layout(gtx, func(gtx C) D {
-		defer clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Max}, gtx.Dp(10)).Push(gtx.Ops).Pop()
-		paint.Fill(gtx.Ops, cardBg)
-
-		padding := unit.Dp(20)
-		if bv.gui.isMobile {
-			padding = unit.Dp(16)
-		}
-
-		return layout.UniformInset(padding).Layout(gtx, func(gtx C) D {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				// Header with order number and delete button
-				layout.Rigid(func(gtx C) D {
-					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-						layout.Flexed(1, func(gtx C) D {
-							label := material.H6(bv.gui.th, "🎟️ Order #"+booking.OrderNumber)
-							label.Color = accentColor
-							if bv.gui.isMobile {
-								label.TextSize = unit.Sp(16)
-							}
-							return label.Layout(gtx)
-						}),
-						layout.Rigid(func(gtx C) D {
-							btn := material.Button(bv.gui.th, &bv.deleteButtons[index], "🗑️ Delete")
-							btn.Background = dangerColor
-							btn.Color = bgColor
-							btn.CornerRadius = unit.Dp(6)
-							btn.TextSize = unit.Sp(12)
-							return btn.Layout(gtx)
-						}),
-					)
-				}),
-				// Divider
-				layout.Rigid(func(gtx C) D {
-					return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
-						paint.FillShape(gtx.Ops, borderColor, clip.Rect{
-							Max: image.Point{X: gtx.Constraints.Max.X, Y: gtx.Dp(unit.Dp(1))},
-						}.Op())
-						return D{Size: image.Point{X: gtx.Constraints.Max.X, Y: gtx.Dp(unit.Dp(1))}}
-					})
-				}),
-				// Event details
-				layout.Rigid(func(gtx C) D {
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "User", booking.UserName)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "📅 Event", booking.EventName)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "🕐 Date", booking.EventDate)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "📍 Venue", booking.EventVenue)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "🎫 Section", booking.Section)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "💺 Seat", booking.SeatInfo)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "🎟️ Ticket", booking.TicketInfo)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "🔢 Quantity", booking.TicketQty)
-						}),
-						layout.Rigid(func(gtx C) D {
-							return bv.gui.layoutInfoRow(gtx, "💵 Total", booking.Total)
-						}),
-					)
-				}),
-			)
-		})
-	})
-}
-
-// UsersView methods
+// UsersView methods with FIXED file operations
 func (uv *UsersView) loadUsers() {
 	uv.mu.Lock()
 	defer uv.mu.Unlock()
 
-	data, err := os.ReadFile("users.json")
+	uv.users = []User{}
+	uv.deleteButtons = []widget.Clickable{}
+
+	// Ensure data directory exists
+	if err := os.MkdirAll("data", 0755); err != nil {
+		uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error creating data directory: %v\n", err)))
+		return
+	}
+
+	filename := "data/users.json"
+
+	// Check if file exists first
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		// File doesn't exist, create empty array
+		emptyData, _ := json.MarshalIndent([]User{}, "", "  ")
+		if err := os.WriteFile(filename, emptyData, 0644); err != nil {
+			uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error creating users file: %v\n", err)))
+		}
+		return
+	}
+
+	data, err := os.ReadFile(filename)
 	if err != nil {
-		uv.users = []User{}
+		uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error reading users file: %v\n", err)))
+		return
+	}
+
+	// Check if file is empty
+	if len(data) == 0 {
 		return
 	}
 
 	var users []User
 	if err := json.Unmarshal(data, &users); err != nil {
-		uv.users = []User{}
+		// If file is corrupted, create a fresh one
+		uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error parsing users file, creating fresh one: %v\n", err)))
+		emptyData, _ := json.MarshalIndent([]User{}, "", "  ")
+		if err := os.WriteFile(filename, emptyData, 0644); err != nil {
+			uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error creating fresh users file: %v\n", err)))
+		}
 		return
 	}
 
 	uv.users = users
-	uv.deleteButtons = make([]widget.Clickable, len(users))
 }
 
 func (uv *UsersView) saveUsers() {
 	uv.mu.Lock()
 	defer uv.mu.Unlock()
 
-	data, err := json.MarshalIndent(uv.users, "", "  ")
-	if err != nil {
-		log.Printf("Error marshalling users: %v", err)
+	// Ensure data directory exists
+	if err := os.MkdirAll("data", 0755); err != nil {
+		uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error creating data directory: %v\n", err)))
 		return
 	}
 
-	if err := os.WriteFile("users.json", data, 0644); err != nil {
-		log.Printf("Error writing users: %v", err)
+	data, err := json.MarshalIndent(uv.users, "", "  ")
+	if err != nil {
+		uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error marshalling users: %v\n", err)))
+		return
 	}
+
+	// Write to temporary file first
+	tempFilename := "data/users.json.tmp"
+	filename := "data/users.json"
+
+	if err := os.WriteFile(tempFilename, data, 0644); err != nil {
+		uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error writing temp users file: %v\n", err)))
+		return
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempFilename, filename); err != nil {
+		uv.gui.logView.Write([]byte(fmt.Sprintf("❌ Error renaming temp users file: %v\n", err)))
+		// Try to clean up temp file
+		os.Remove(tempFilename)
+		return
+	}
+
+	uv.gui.logView.Write([]byte("✅ Users saved successfully\n"))
 }
 
 func (uv *UsersView) Layout(gtx C) D {
-	uv.mu.Lock()
-	defer uv.mu.Unlock()
-
+	// Handle refresh button (without lock)
 	if uv.refreshBtn.Clicked(gtx) {
 		uv.loadUsers()
 		uv.gui.w.Invalidate()
+		return D{}
 	}
 
+	// Handle delete all button (without lock)
 	if uv.deleteAllBtn.Clicked(gtx) {
+		uv.mu.Lock()
 		uv.users = []User{}
+		uv.deleteButtons = []widget.Clickable{}
+		uv.mu.Unlock()
 		uv.saveUsers()
 		uv.gui.w.Invalidate()
+		return D{}
 	}
 
-	// Handle individual delete buttons
+	// Ensure deleteButtons array matches users length
+	uv.mu.Lock()
 	if len(uv.deleteButtons) != len(uv.users) {
 		uv.deleteButtons = make([]widget.Clickable, len(uv.users))
 	}
 
-	for i := len(uv.deleteButtons) - 1; i >= 0; i-- {
+	// Check for delete button clicks FIRST, before rendering
+	var deletedIndex = -1
+	for i := 0; i < len(uv.deleteButtons) && i < len(uv.users); i++ {
 		if uv.deleteButtons[i].Clicked(gtx) {
-			uv.users = append(uv.users[:i], uv.users[i+1:]...)
-			uv.saveUsers()
-			uv.gui.w.Invalidate()
+			deletedIndex = i
 			break
 		}
 	}
+	uv.mu.Unlock()
 
-	if uv.validateBtn.Clicked(gtx) {
-		uv.validating = true
-		go func() {
-			username, err := services.GetUserName(uv.sidEditor.Value())
-			if err != nil {
-				log.Printf("Error validating user: %v", err)
-				uv.gui.w.Invalidate()
-				uv.validating = false
-				return
-			}
-			uv.users = append(uv.users, User{
-				SID:      uv.sidEditor.Value(),
-				Username: username,
-			})
+	// Process deletion if needed (outside the lock)
+	if deletedIndex >= 0 {
+		uv.mu.Lock()
+		// Double-check index is still valid
+		if deletedIndex < len(uv.users) {
+			username := uv.users[deletedIndex].Username
+
+			// Remove user and button
+			uv.users = append(uv.users[:deletedIndex], uv.users[deletedIndex+1:]...)
+			uv.deleteButtons = append(uv.deleteButtons[:deletedIndex], uv.deleteButtons[deletedIndex+1:]...)
+
+			uv.mu.Unlock()
 			uv.saveUsers()
-			uv.sidEditor.SetValue("")
-			uv.gui.w.Invalidate()
-			uv.validating = false
-		}()
+			uv.gui.logView.Write([]byte(fmt.Sprintf("🗑️ User '%s' deleted\n", username)))
+		} else {
+			uv.mu.Unlock()
+		}
+		uv.gui.w.Invalidate()
+		return D{}
 	}
 
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		// Header
-		layout.Rigid(func(gtx C) D {
-			padding := unit.Dp(20)
-			if uv.gui.isMobile {
-				padding = unit.Dp(16)
-			}
-			return layout.UniformInset(padding).Layout(gtx, func(gtx C) D {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, func(gtx C) D {
-						label := material.H5(uv.gui.th, fmt.Sprintf("👥 Users (%d)", len(uv.users)))
-						label.Color = accentColor
-						if uv.gui.isMobile {
-							label.TextSize = unit.Sp(18)
-						}
-						return label.Layout(gtx)
-					}),
-					layout.Rigid(func(gtx C) D {
-						btn := material.Button(uv.gui.th, &uv.refreshBtn, "🔄 Refresh")
-						btn.Background = accentColor
-						btn.Color = bgColor
-						btn.CornerRadius = unit.Dp(8)
-						if uv.gui.isMobile {
-							btn.TextSize = unit.Sp(13)
-						}
-						return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
-					}),
-					layout.Rigid(func(gtx C) D {
-						if len(uv.users) == 0 {
-							return D{}
-						}
-						btn := material.Button(uv.gui.th, &uv.deleteAllBtn, "🗑️ Delete All")
-						btn.Background = dangerColor
-						btn.Color = bgColor
-						btn.CornerRadius = unit.Dp(8)
-						if uv.gui.isMobile {
-							btn.TextSize = unit.Sp(13)
-						}
-						return btn.Layout(gtx)
-					}),
-				)
-			})
-		}),
-		// Add user form
-		layout.Rigid(func(gtx C) D {
-			horizontalPadding := unit.Dp(20)
-			if uv.gui.isMobile {
-				horizontalPadding = unit.Dp(16)
-			}
-			return layout.Inset{Left: horizontalPadding, Right: horizontalPadding, Bottom: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
-				return widget.Border{
-					Color:        borderColor,
-					Width:        unit.Dp(1),
-					CornerRadius: unit.Dp(10),
-				}.Layout(gtx, func(gtx C) D {
-					defer clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Max}, gtx.Dp(10)).Push(gtx.Ops).Pop()
-					paint.Fill(gtx.Ops, cardBg)
+	uv.mu.Lock()
+	defer uv.mu.Unlock()
 
-					innerPadding := unit.Dp(20)
-					if uv.gui.isMobile {
-						innerPadding = unit.Dp(16)
+	// Handle validate button
+	if uv.validateBtn.Clicked(gtx) && !uv.validating {
+		sid := strings.TrimSpace(uv.sidEditor.Value())
+		if sid == "" {
+			uv.gui.logView.Write([]byte("❌ Please enter a SID\n"))
+			return D{}
+		}
+
+		uv.validating = true
+		uv.gui.w.Invalidate()
+
+		go func() {
+			defer func() {
+				uv.validating = false
+				uv.gui.w.Invalidate()
+			}()
+
+			username, err := services.GetUserName(sid)
+
+			uv.mu.Lock()
+			var message string
+			var needsSave bool
+
+			if err != nil {
+				message = fmt.Sprintf("❌ Error validating user: %v\n", err)
+			} else {
+				userExists := false
+				for _, user := range uv.users {
+					if user.SID == sid {
+						userExists = true
+						break
+					}
+				}
+				if !userExists {
+					uv.users = append(uv.users, User{
+						SID:      sid,
+						Username: username,
+					})
+					uv.deleteButtons = append(uv.deleteButtons, widget.Clickable{})
+					needsSave = true
+					message = fmt.Sprintf("✅ User added: %s\n", username)
+					uv.sidEditor.SetValue("")
+				} else {
+					message = "ℹ️ User already exists\n"
+				}
+			}
+			uv.mu.Unlock()
+
+			// Save AFTER unlocking
+			if needsSave {
+				uv.saveUsers()
+			}
+
+			// Write log and invalidate after unlock
+			uv.gui.logView.Write([]byte(message))
+			uv.gui.w.Invalidate()
+		}()
+		return D{}
+	}
+
+	// Also update deleteButtons array if it doesn't match users length
+	if len(uv.deleteButtons) != len(uv.users) {
+		uv.deleteButtons = make([]widget.Clickable, len(uv.users))
+	}
+	// Use a scrollable layout for users view
+	list := &widget.List{
+		List: layout.List{Axis: layout.Vertical},
+	}
+
+	return material.List(uv.gui.th, list).Layout(gtx, 1, func(gtx C, i int) D {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			// Header
+			layout.Rigid(func(gtx C) D {
+				padding := unit.Dp(20)
+				if uv.gui.isMobile {
+					padding = unit.Dp(16)
+				}
+				return layout.UniformInset(padding).Layout(gtx, func(gtx C) D {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Flexed(1, func(gtx C) D {
+							label := material.H5(uv.gui.th, fmt.Sprintf("👥 Users (%d)", len(uv.users)))
+							label.Color = accentColor
+							if uv.gui.isMobile {
+								label.TextSize = unit.Sp(18)
+							}
+							return label.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx C) D {
+							btn := material.Button(uv.gui.th, &uv.refreshBtn, "🔄 Refresh")
+							btn.Background = accentColor
+							btn.Color = bgColor
+							btn.CornerRadius = unit.Dp(8)
+							if uv.gui.isMobile {
+								btn.TextSize = unit.Sp(13)
+							}
+							return layout.Inset{Right: unit.Dp(12)}.Layout(gtx, btn.Layout)
+						}),
+						layout.Rigid(func(gtx C) D {
+							if len(uv.users) == 0 {
+								return D{}
+							}
+							btn := material.Button(uv.gui.th, &uv.deleteAllBtn, "🗑️ Delete All")
+							btn.Background = dangerColor
+							btn.Color = bgColor
+							btn.CornerRadius = unit.Dp(8)
+							if uv.gui.isMobile {
+								btn.TextSize = unit.Sp(13)
+							}
+							return btn.Layout(gtx)
+						}),
+					)
+				})
+			}),
+			// Add user form
+			layout.Rigid(func(gtx C) D {
+				horizontalPadding := unit.Dp(20)
+				if uv.gui.isMobile {
+					horizontalPadding = unit.Dp(16)
+				}
+				return layout.Inset{Left: horizontalPadding, Right: horizontalPadding, Bottom: unit.Dp(16)}.Layout(gtx, func(gtx C) D {
+					return widget.Border{
+						Color:        borderColor,
+						Width:        unit.Dp(1),
+						CornerRadius: unit.Dp(10),
+					}.Layout(gtx, func(gtx C) D {
+						defer clip.UniformRRect(image.Rectangle{Max: gtx.Constraints.Max}, gtx.Dp(10)).Push(gtx.Ops).Pop()
+						paint.Fill(gtx.Ops, cardBg)
+
+						innerPadding := unit.Dp(20)
+						if uv.gui.isMobile {
+							innerPadding = unit.Dp(16)
+						}
+
+						return layout.UniformInset(innerPadding).Layout(gtx, func(gtx C) D {
+							btnText := "✔ Validate & Save"
+							btnColor := successColor
+							if uv.validating {
+								btnText = "Validating..."
+								btnColor = runningColor
+								gtx = gtx.Disabled()
+							}
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(func(gtx C) D {
+									return uv.gui.layoutFormRow(gtx, "🔑 SID Cookie", &uv.sidEditor)
+								}),
+								layout.Rigid(func(gtx C) D {
+									btn := material.Button(uv.gui.th, &uv.validateBtn, btnText)
+									btn.Background = btnColor
+									btn.Color = bgColor
+									btn.CornerRadius = unit.Dp(8)
+									if uv.gui.isMobile {
+										btn.TextSize = unit.Sp(13)
+									}
+									return btn.Layout(gtx)
+								}),
+							)
+						})
+					})
+				})
+			}),
+			// Users List
+			layout.Flexed(1, func(gtx C) D {
+				horizontalPadding := unit.Dp(20)
+				if uv.gui.isMobile {
+					horizontalPadding = unit.Dp(16)
+				}
+				return layout.Inset{Left: horizontalPadding, Right: horizontalPadding, Bottom: unit.Dp(20)}.Layout(gtx, func(gtx C) D {
+					if len(uv.users) == 0 {
+						return uv.layoutEmptyState(gtx)
 					}
 
-					return layout.UniformInset(innerPadding).Layout(gtx, func(gtx C) D {
-						btnText := "✔ Validate & Save"
-						btnColor := successColor
-						if uv.validating {
-							btnText = "Validating..."
-							btnColor = runningColor
-							gtx = gtx.Disabled()
-						}
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(func(gtx C) D {
-								return uv.gui.layoutFormRow(gtx, "🔑 SID Cookie", &uv.sidEditor)
-							}),
-							layout.Rigid(func(gtx C) D {
-								btn := material.Button(uv.gui.th, &uv.validateBtn, btnText)
-								btn.Background = btnColor
-								btn.Color = bgColor
-								btn.CornerRadius = unit.Dp(8)
-								if uv.gui.isMobile {
-									btn.TextSize = unit.Sp(13)
-								}
-								return btn.Layout(gtx)
-							}),
-						)
+					userList := &widget.List{
+						List: layout.List{Axis: layout.Vertical},
+					}
+					return material.List(uv.gui.th, userList).Layout(gtx, len(uv.users), func(gtx C, i int) D {
+						return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
+							return uv.layoutUserCard(gtx, i)
+						})
 					})
 				})
-			})
-		}),
-		// Users List
-		layout.Flexed(1, func(gtx C) D {
-			horizontalPadding := unit.Dp(20)
-			if uv.gui.isMobile {
-				horizontalPadding = unit.Dp(16)
-			}
-			return layout.Inset{Left: horizontalPadding, Right: horizontalPadding, Bottom: unit.Dp(20)}.Layout(gtx, func(gtx C) D {
-				if len(uv.users) == 0 {
-					return uv.layoutEmptyState(gtx)
-				}
-
-				uv.list.Axis = layout.Vertical
-				return material.List(uv.gui.th, &uv.list).Layout(gtx, len(uv.users), func(gtx C, i int) D {
-					return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx C) D {
-						return uv.layoutUserCard(gtx, i)
-					})
-				})
-			})
-		}),
-	)
+			}),
+		)
+	})
 }
 
 func (uv *UsersView) layoutEmptyState(gtx C) D {
@@ -1602,6 +1526,10 @@ func (uv *UsersView) layoutEmptyState(gtx C) D {
 }
 
 func (uv *UsersView) layoutUserCard(gtx C, index int) D {
+	if index >= len(uv.users) {
+		return D{}
+	}
+
 	user := uv.users[index]
 
 	return widget.Border{
@@ -1631,6 +1559,9 @@ func (uv *UsersView) layoutUserCard(gtx C, index int) D {
 							return label.Layout(gtx)
 						}),
 						layout.Rigid(func(gtx C) D {
+							if index >= len(uv.deleteButtons) {
+								return D{}
+							}
 							btn := material.Button(uv.gui.th, &uv.deleteButtons[index], "🗑️ Delete")
 							btn.Background = dangerColor
 							btn.Color = bgColor
@@ -1662,7 +1593,6 @@ func (uv *UsersView) layoutUserCard(gtx C, index int) D {
 	})
 }
 
-// Also add this helper method to the GUI struct if it's missing:
 func (g *GUI) layoutInfoRow(gtx C, label, value string) D {
 	if value == "" {
 		return D{}
@@ -1717,6 +1647,11 @@ func (g *GUI) layoutUserDropdown(gtx C, bot *Bot) D {
 					userNames[i] = u.Username
 				}
 				bot.userDropdown.Options = userNames
+
+				// Ensure selected index is valid
+				if bot.userDropdown.selected >= len(g.usersView.users) {
+					bot.userDropdown.selected = 0
+				}
 
 				// if a user is selected, update the bot config
 				if bot.userDropdown.selected < len(g.usersView.users) {
@@ -1797,8 +1732,4 @@ type BotLogWriter struct {
 func (w *BotLogWriter) Write(p []byte) (n int, err error) {
 	message := fmt.Sprintf("[%s] %s", w.botName, string(p))
 	return w.gui.logView.Write([]byte(message))
-}
-
-func LogToFile(format string, v ...interface{}) {
-	log.Printf(format, v...)
 }

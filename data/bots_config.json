@@ -1,0 +1,21 @@
+[
+  {
+    "id": "bot_1764869446",
+    "name": "Bot #1",
+    "user": {
+      "sid": "h7b9rpclelivle14ftrfo9f6ju",
+      "username": "[Google] Jin Go Sup"
+    },
+    "sid": "h7b9rpclelivle14ftrfo9f6ju",
+    "event_id": "25_nctdream",
+    "ticket_id": "20097",
+    "filter": "",
+    "quantity": "1",
+    "max_tickets": "4",
+    "pre_sale_code": "",
+    "loop": true,
+    "schedule": false,
+    "start_date": "",
+    "start_time": ":"
+  }
+]
