@@ -135,54 +135,6 @@ func getBrowserContext(parentCtx context.Context) (context.Context, context.Canc
 		// chromedp.Flag("headless", false), // Changed from false - required for CLI
 
 		// Anti-detection
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-
-		// Core optimizations (keep your existing ones)
-		chromedp.Flag("disable-extensions", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-plugins", true),
-		chromedp.Flag("disable-translate", true),
-		chromedp.Flag("disable-default-apps", true),
-		chromedp.Flag("disable-hang-monitor", true),
-		chromedp.Flag("disable-prompt-on-repost", true),
-		chromedp.Flag("disable-background-timer-throttling", true),
-		chromedp.Flag("disable-renderer-backgrounding", true),
-		chromedp.Flag("disable-backgrounding-occluded-windows", true),
-		chromedp.Flag("disable-component-update", true),
-		chromedp.Flag("disable-domain-reliability", true),
-
-		// SPEED OPTIMIZATIONS (while keeping images)
-		chromedp.Flag("disable-dev-shm-usage", true), // Important for servers
-		chromedp.Flag("disable-features", "IsolateOrigins,site-per-process,VizDisplayCompositor"),
-		chromedp.Flag("disable-background-networking", true),
-		chromedp.Flag("disable-client-side-phishing-detection", true),
-		chromedp.Flag("disable-sync", true),
-		chromedp.Flag("disable-breakpad", true),
-		chromedp.Flag("disable-software-rasterizer", true),
-		chromedp.Flag("disable-notifications", true),
-		chromedp.Flag("disable-popup-blocking", true),
-		chromedp.Flag("metrics-recording-only", true),
-		chromedp.Flag("safebrowsing-disable-auto-update", true),
-		chromedp.Flag("password-store", "basic"),
-		chromedp.Flag("use-mock-keychain", true),
-
-		// Network optimizations
-		chromedp.Flag("proxy-server", "direct://"),
-		chromedp.Flag("proxy-bypass-list", "*"),
-		chromedp.Flag("enable-features", "NetworkService,NetworkServiceInProcess"),
-
-		// Disable unnecessary media/fonts (keeps images)
-		chromedp.Flag("autoplay-policy", "user-gesture-required"),
-		chromedp.Flag("disable-web-security", false), // Keep security for production
-
-		// Cache settings - use memory cache, not disk (faster on servers)
-		chromedp.Flag("disk-cache-dir", "/dev/null"), // Disable disk cache
-		chromedp.Flag("disk-cache-size", "1"),
-		chromedp.Flag("media-cache-size", "1"),
-
-		// Smaller window = faster rendering
-		chromedp.WindowSize(1280, 720),
 
 		// Keep your user agent
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
