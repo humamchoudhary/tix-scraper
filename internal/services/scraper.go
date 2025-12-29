@@ -132,7 +132,13 @@ func getBrowserContext(parentCtx context.Context) (context.Context, context.Canc
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 
 		// CRITICAL: Must be true for CLI/server environment
-		// chromedp.Flag("headless", false), // Changed from false - required for CLI
+		chromedp.Flag("headless", false), // Changed from false - required for CLI
+
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("blink-settings", "imagesEnabled=true"), // Don't load images
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-notifications", true),
+		chromedp.Flag("mute-audio", true),
 
 		// Anti-detection
 
@@ -215,7 +221,7 @@ func runMainFlow(ctx context.Context, cfg *ScraperConfig, isFirstIteration bool)
 			}
 			// After executeBookingFlow succeeds, wait for next URL
 			// It should redirect to ticket/ticket/ or ticket/order
-			time.Sleep(2 * time.Second)
+			// time.Sleep(2 * time.Second)
 			continue
 
 		case strings.Contains(currentURL, "https://tixcraft.com/ticket/ticket/"):
@@ -225,7 +231,7 @@ func runMainFlow(ctx context.Context, cfg *ScraperConfig, isFirstIteration bool)
 				return false
 			}
 			// After processTicketPage succeeds, wait for redirect
-			time.Sleep(2 * time.Second)
+			// time.Sleep(2 * time.Second)
 			continue
 
 		case strings.Contains(currentURL, "https://tixcraft.com/ticket/verify"):
@@ -237,7 +243,7 @@ func runMainFlow(ctx context.Context, cfg *ScraperConfig, isFirstIteration bool)
 			LogToFile("🔍 On order page, waiting for redirect...")
 			// Just wait for redirect to checkout
 			err := chromedp.Run(ctx,
-				chromedp.Sleep(2*time.Second),
+				chromedp.Sleep(1*time.Second),
 			)
 			if err != nil {
 				LogToFile("❌ Error on order page: %v", err)
@@ -300,7 +306,7 @@ func RunScraper(ctx context.Context, cfg ScraperConfig) {
 	err = chromedp.Run(browserCtx,
 		setupCookies(&cfg),
 		chromedp.Navigate(initialURL),
-		chromedp.Sleep(2*time.Second),
+		// chromedp.Sleep(2*time.Second),
 	)
 	if err != nil {
 		LogToFile("❌ Initial navigation failed: %v", err)
@@ -331,8 +337,8 @@ func RunScraper(ctx context.Context, cfg ScraperConfig) {
 				// resetBrowserState(browserCtx, cfg)
 			}
 		} else {
-			LogToFile("❌ Iteration failed. Retrying in 2 seconds...")
-			time.Sleep(2 * time.Second)
+			// LogToFile("❌ Iteration failed. Retrying in 2 seconds...")
+			// time.Sleep(2 * time.Second)
 			resetBrowserState(browserCtx, cfg)
 		}
 	}
@@ -778,103 +784,146 @@ func monitorEventPage(ctx context.Context, cfg ScraperConfig) error {
 func timeToCDPTime(t time.Time) *cdp.TimeSinceEpoch {
 	return (*cdp.TimeSinceEpoch)(&t)
 }
+
 func executeBookingFlow(ctx context.Context, cfg ScraperConfig, isFirstIteration bool) bool {
-	// Build URL based on available data
-
-	// var username string
-
-	// Only navigate if we're not already on the correct page
-
-	// Quick login check with timeout
-	// loginCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	// defer cancel()
-	//
-	// err := chromedp.Run(loginCtx,
-	// 	chromedp.WaitReady("body"),
-	// 	chromedp.Text(".user-name", &username, chromedp.ByQuery),
-	// )
-	// if err != nil || strings.TrimSpace(username) == "" {
-	// 	LogToFile("❌ Login failed or User not found. Update SID/TIXUISID.")
-	// 	return false
-	// }
-	// LogToFile("✅ Logged in as: %s", username)
-
-	LogToFile("🔍 Checking for pre-sale code requirement...")
-	if err := handlePreSaleCode(ctx, cfg.PreSaleCode); err != nil {
-		LogToFile("❌ Pre-sale code error: %v", err)
-		return false
+	if cfg.PreSaleCode != "" {
+		LogToFile("🔍 Checking for pre-sale code requirement...")
+		if err := handlePreSaleCode(ctx, cfg.PreSaleCode); err != nil {
+			LogToFile("❌ Pre-sale code error: %v", err)
+			return false
+		}
 	}
 
-	// Fast seat selection
-	var seatVal string
-	actions := []chromedp.Action{
-		chromedp.WaitReady("#selectseat", chromedp.ByQuery),
+	// 1. Always dismiss cookie banner on first iteration to prevent click interception
+	if isFirstIteration {
+		// LogToFile("🍪 First run: Attempting to clear cookie banners...")
+		go func() {
+			// Run in background so we don't block if it doesn't exist
+			_ = chromedp.Run(ctx,
+				chromedp.WaitVisible("#onetrust-accept-btn-handler", chromedp.ByID),
+				chromedp.Click("#onetrust-accept-btn-handler", chromedp.ByID),
+			)
+		}()
+		// time.Sleep(200 * time.Millisecond) // Slight pause for banner animation
 	}
 
-	actions = append(actions,
+	// 2. Find the seat selector (The safe version from previous step)
+	var targetSelector string
+	err := chromedp.Run(ctx,
 		chromedp.WaitVisible("#selectseat", chromedp.ByID),
 		chromedp.EvaluateAsDevTools(fmt.Sprintf(`
         (function(){
             try {
                 const filter = "%s";
                 const links = document.querySelectorAll(".area-list a");
+                let target = null;
                 
-                // If no filter provided, click the first available seat
+                // Helper: Return selector safe for numeric IDs
+                const getSelector = (el) => {
+                    if (el.id) return "[id='" + el.id + "']";
+                    const href = el.getAttribute('href');
+                    if (href) return 'a[href="' + href + '"]';
+                    return null;
+                };
+
+                // Filter Logic
                 if (!filter || filter.trim() === "") {
-                    if (links.length > 0) {
-                        links[0].click();
-                        return links[0].innerText.trim();
-                    }
-                    return "no_seats_available";
-                }
-                
-                // Split comma-separated filters
-                const filters = filter.split(',').map(f => f.trim()).filter(f => f);
-                
-                // If multiple filters provided, try each one
-                if (filters.length > 1) {
-                    for (let filterText of filters) {
+                    if (links.length > 0) target = links[0];
+                } else {
+                    const filters = filter.split(',').map(f => f.trim()).filter(f => f);
+                    if (filters.length > 1) {
+                        for (let filterText of filters) {
+                            for (let a of links) {
+                                if (a.innerText.includes(filterText)) {
+                                    target = a;
+                                    break;
+                                }
+                            }
+                            if (target) break;
+                        }
+                    } else {
+                        const singleFilter = filters[0];
                         for (let a of links) {
-                            if (a.innerText.includes(filterText)) {
-                                a.click();
-                                return a.innerText.trim();
+                            if (a.innerText.includes(singleFilter)) {
+                                target = a;
+                                break;
                             }
                         }
                     }
-                    return "no_matching_seat";
                 }
-                
-                // Single filter (original behavior)
-                const singleFilter = filters[0];
-                for (let a of links) {
-                    if (a.innerText.includes(singleFilter)) {
-                        a.click();
-                        return a.innerText.trim();
-                    }
-                }
+
+                if (target) return getSelector(target);
                 return "no_matching_seat";
             } catch (error) {
                 return "error: " + error.message;
             }
         })()
-    `, cfg.Filter), &seatVal),
+    `, cfg.Filter), &targetSelector),
 	)
-	err := chromedp.Run(ctx, actions...)
-	if err != nil {
-		LogToFile("❌ Error selecting seat: %v", err)
+
+	if err != nil || targetSelector == "" || strings.HasPrefix(targetSelector, "error") {
+		LogToFile("❌ Seat selection failed: %s", targetSelector)
 		return false
 	}
 
-	if seatVal == "no_matching_seat" {
-		LogToFile("❌ No matching seat found for filter: %s", cfg.Filter)
-		return false
-	}
-	if strings.HasPrefix(seatVal, "error:") {
-		LogToFile("❌ JavaScript error selecting seat: %s", seatVal)
-		return false
+	// LogToFile("🎯 Target Found: %s. Starting Click-Verify Loop...", targetSelector)
+
+	// 3. ROBUST CLICK LOOP (The Fix for "Stuck" state)
+	// We attempt to click, then wait up to 1s to see if the URL changes.
+	// If not, we click again. This handles "JS not ready" issues.
+
+	clickSuccess := false
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		var currentURL, newURL string
+
+		// A. Get current URL
+		chromedp.Run(ctx, chromedp.Location(&currentURL))
+
+		// B. Click the seat
+		err = chromedp.Run(ctx,
+			chromedp.WaitVisible(targetSelector, chromedp.ByQuery),
+			chromedp.Click(targetSelector, chromedp.ByQuery),
+		)
+		if err != nil {
+			// LogToFile("⚠️ Click attempt %d failed: %v", attempt, err)
+			continue
+		}
+
+		// C. Wait for URL change (Navigation started)
+		// We use a quick polling loop here instead of a hard sleep
+		timeout := time.After(1500 * time.Millisecond)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		waitingForNav := true
+		for waitingForNav {
+			select {
+			case <-timeout:
+				waitingForNav = false
+			case <-ticker.C:
+				chromedp.Run(ctx, chromedp.Location(&newURL))
+				// If URL changed OR we see the captcha box (ticket page), success!
+				if newURL != currentURL || strings.Contains(newURL, "ticket/ticket") {
+					clickSuccess = true
+					waitingForNav = false
+				}
+			}
+		}
+
+		if clickSuccess {
+			LogToFile("✅ Seat Click")
+			break
+		}
+
+		// LogToFile("🔁 Click %d did not trigger navigation (JS not ready?), retrying...", attempt)
+		time.Sleep(200 * time.Millisecond)
 	}
 
-	LogToFile("✅ Selected seat: %s", seatVal)
+	if !clickSuccess {
+		LogToFile("❌ Failed to select seat after 3 attempts.")
+		return false
+	}
 
 	// Fast captcha processing with retries
 	// Fast captcha processing with retries
@@ -921,7 +970,7 @@ func executeBookingFlow(ctx context.Context, cfg ScraperConfig, isFirstIteration
 
 			chromedp.SetAttributeValue("#TicketForm_agree", "checked", "true", chromedp.ByQuery),
 			chromedp.Click("button[type='submit']", chromedp.ByQuery),
-			chromedp.Sleep(2000*time.Millisecond),
+			chromedp.Sleep(500*time.Millisecond),
 			// Check for error messages on the page
 			chromedp.Evaluate(`
             (function() {
@@ -1012,7 +1061,7 @@ func fastProcessCaptcha(ctx context.Context) (string, error) {
 
 	// Fast captcha image capture
 	err := chromedp.Run(ctx,
-		chromedp.WaitVisible("#TicketForm_verifyCode-image", chromedp.ByID),
+		chromedp.WaitReady("#TicketForm_verifyCode-image", chromedp.ByID),
 		chromedp.Evaluate(`
             (function() {
                 try {
@@ -1160,7 +1209,7 @@ func handlePreSaleCode(ctx context.Context, preSaleCode string) error {
 	LogToFile("🔍 Checking for pre-sale code form...")
 
 	// Wait a bit for page to load
-	time.Sleep(1 * time.Second)
+	// time.Sleep(1 * time.Second)
 
 	var hasForm bool
 	err := chromedp.Run(ctx,
